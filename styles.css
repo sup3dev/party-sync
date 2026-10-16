@@ -1,11 +1,18 @@
-/* Party Sync Show — 21st.dev Inspired Dark Neon Game Show UI */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+/* SYNC // 50 — 21st.dev Studio Broadcast & Tactile Brutalist Design System */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700;800&family=Unbounded:wght@600;700;800;900&display=swap');
 
 :root {
-  --bg-deep: #07080d;
-  --bg-card: rgba(17, 20, 32, 0.78);
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-glow: rgba(99, 102, 241, 0.45);
+  --bg: #09090b;
+  --surface: #121215;
+  --surface-elevated: #18181c;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --accent-yellow: #facc15;
+  --accent-emerald: #10b981;
+  --accent-rose: #f43f5e;
+  --accent-blue: #3b82f6;
 }
 
 * {
@@ -14,117 +21,152 @@
 
 body {
   margin: 0;
-  background-color: var(--bg-deep);
-  color: #f8fafc;
+  background-color: var(--bg);
+  color: var(--text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   min-height: 100vh;
   overflow-x: hidden;
-  background-image:
-    radial-gradient(circle at 12% 18%, rgba(99, 102, 241, 0.16) 0%, transparent 42%),
-    radial-gradient(circle at 88% 15%, rgba(236, 72, 153, 0.13) 0%, transparent 40%),
-    radial-gradient(circle at 50% 88%, rgba(16, 185, 129, 0.10) 0%, transparent 45%);
+  /* Тонкая техническая точка-сетка студийного пульта */
+  background-image: radial-gradient(#27272a 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
 .font-display {
-  font-family: 'Space Grotesk', 'Inter', sans-serif;
+  font-family: 'Unbounded', sans-serif;
+  letter-spacing: -0.02em;
 }
 
 .font-mono-code {
   font-family: 'JetBrains Mono', monospace;
 }
 
-.glass-card {
-  background: var(--bg-card);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border-subtle);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+/* Студийные карточки с тактильным жёстким бордером (без дешёвого AI-glassmorphism) */
+.studio-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7);
 }
 
-.glass-card-interactive {
-  background: rgba(22, 26, 42, 0.75);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+.studio-card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  transition: transform 0.15s cubic-bezier(0.22, 0.61, 0.36, 1),
+              border-color 0.15s ease,
+              background-color 0.15s ease,
+              box-shadow 0.15s ease;
 }
 
-.glass-card-interactive:hover:not(:disabled) {
+.studio-card-interactive {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  transition: all 0.14s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.studio-card-interactive:hover:not(:disabled) {
+  border-color: #71717a;
+  background: #1f1f25;
   transform: translateY(-2px);
-  border-color: rgba(129, 140, 248, 0.55);
-  box-shadow: 0 12px 32px -6px rgba(99, 102, 241, 0.28);
-  background: rgba(30, 36, 58, 0.88);
+  box-shadow: 0 6px 0 0 #000000;
 }
 
-.active-player-glow {
-  border-color: rgba(99, 102, 241, 0.85) !important;
-  box-shadow: 0 0 28px rgba(99, 102, 241, 0.35), inset 0 0 15px rgba(99, 102, 241, 0.15);
-  animation: pulseBorder 2.2s infinite ease-in-out;
+.studio-card-interactive:active:not(:disabled) {
+  transform: translateY(0px);
+  box-shadow: 0 2px 0 0 #000000;
 }
 
-@keyframes pulseBorder {
-  0%, 100% {
-    box-shadow: 0 0 22px rgba(99, 102, 241, 0.32), inset 0 0 12px rgba(99, 102, 241, 0.12);
-  }
-  50% {
-    box-shadow: 0 0 34px rgba(236, 72, 153, 0.45), inset 0 0 18px rgba(236, 72, 153, 0.18);
-  }
+/* Активный игрок на табло */
+.player-slot-active {
+  background: #18181b;
+  border: 2px solid var(--accent-yellow) !important;
+  box-shadow: 4px 4px 0px 0px var(--accent-yellow);
 }
 
-@keyframes popIn {
-  0% {
+/* Тактильная кнопка с жёстким офсетом */
+.btn-tactile {
+  border: 1px solid #3f3f46;
+  box-shadow: 3px 3px 0px 0px #000000;
+  transition: all 0.12s ease;
+}
+
+.btn-tactile:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0px 0px #000000;
+}
+
+.btn-tactile:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0px 0px #000000;
+}
+
+/* Анимация проявления текста из 21st.dev Blur Reveal Deck */
+@keyframes dc-blur-in {
+  from {
     opacity: 0;
-    transform: scale(0.95) translateY(8px);
+    filter: blur(6px);
+    transform: translateY(6px);
   }
-  100% {
+  to {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    filter: blur(0);
+    transform: translateY(0);
   }
 }
 
-.animate-pop {
-  animation: popIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+@keyframes dc-bar-grow {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
 }
 
-/* Custom Range Slider for Wavelength */
-input[type="range"].wavelength-slider {
+.reveal-stage {
+  animation: dc-blur-in 0.24s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.accent-bar-grow {
+  transform-origin: left center;
+  animation: dc-bar-grow 0.45s cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+/* Ползунок для режима СПЕКТР (Wavelength) */
+input[type="range"].spectrum-slider {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 12px;
-  background: linear-gradient(90deg, #6366f1 0%, #ec4899 50%, #10b981 100%);
-  border-radius: 999px;
+  height: 16px;
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 4px;
   outline: none;
 }
 
-input[type="range"].wavelength-slider::-webkit-slider-thumb {
+input[type="range"].spectrum-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 4px solid #6366f1;
-  box-shadow: 0 0 16px rgba(99, 102, 241, 0.8);
-  cursor: pointer;
-  transition: transform 0.15s ease;
+  width: 24px;
+  height: 32px;
+  border-radius: 3px;
+  background: var(--accent-yellow);
+  border: 2px solid #000000;
+  box-shadow: 2px 2px 0px #000000;
+  cursor: ew-resize;
 }
 
-input[type="range"].wavelength-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
-}
-
-/* Scrollbar styling */
+/* Скроллбар */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #090a10;
+  background: #09090b;
 }
 ::-webkit-scrollbar-thumb {
-  background: #262b40;
-  border-radius: 4px;
+  background: #27272a;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3b4262;
+  background: #3f3f46;
 }

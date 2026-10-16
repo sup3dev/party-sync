@@ -1,4 +1,4 @@
-// Главный игровой движок «ВЕЧЕРНИЙ СИНК» (Party Sync Show)
+// SYNC // 50 — Главный движок игры (Studio Broadcast & Tactile Brutalist Edition)
 import {
   CATEGORIES,
   JOKERS,
@@ -13,27 +13,29 @@ import { sfx } from './audio.js';
 import { aiClient } from './ai.js';
 import { P2PRoomManager } from './p2p.js';
 
-const STATE_STORAGE_KEY = 'party_sync_game_state_v1';
+const STATE_STORAGE_KEY = 'sync50_game_state_v2';
 
 const DEFAULT_PLAYERS = [
   { id: 'p1', name: 'Алекс', role: 'dev', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
-  { id: 'p2', name: 'Прогер #2', role: 'dev', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
-  { id: 'p3', name: 'Прогер #3', role: 'dev', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
-  { id: 'p4', name: 'Менеджер #1', role: 'mgr', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
-  { id: 'p5', name: 'Менеджер #2', role: 'mgr', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
-  { id: 'p6', name: 'Менеджер #3', role: 'mgr', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null }
+  { id: 'p2', name: 'Разработчик 2', role: 'dev', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
+  { id: 'p3', name: 'Разработчик 3', role: 'dev', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
+  { id: 'p4', name: 'Менеджер 1', role: 'mgr', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
+  { id: 'p5', name: 'Менеджер 2', role: 'mgr', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null },
+  { id: 'p6', name: 'Менеджер 3', role: 'mgr', score: 0, streak: 0, jokers: ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'], peerId: null }
 ];
 
 class PartySyncApp {
   constructor() {
     this.isClientController = false;
-    this.clientPlayerId = null;
     this.clientRoomCode = null;
+    this.clientSelectedPlayerId = localStorage.getItem('sync50_client_pid') || null;
     this.hostSyncedState = null;
 
     this.state = this.loadState() || this.createInitialState();
     this.timerInterval = null;
     this.speechRecognition = null;
+    this.toastMessage = null;
+    this.toastTimeout = null;
 
     this.p2p = new P2PRoomManager({
       onPlayerJoin: (peerId, profile) => this.handlePeerJoin(peerId, profile),
@@ -46,14 +48,66 @@ class PartySyncApp {
     this.render();
   }
 
+  showToast(msg) {
+    this.toastMessage = msg;
+    if (this.toastTimeout) clearTimeout(this.toastTimeout);
+    const toastEl = document.getElementById('studio-toast');
+    if (toastEl) {
+      toastEl.textContent = msg;
+      toastEl.classList.remove('hidden');
+    } else {
+      this.render();
+    }
+    this.toastTimeout = setTimeout(() => {
+      this.toastMessage = null;
+      const el = document.getElementById('studio-toast');
+      if (el) el.classList.add('hidden');
+    }, 3200);
+  }
+
+  // Генерирует детерминированную карту 50 клеток для партии
+  buildBoardSchedule(totalTurns, mode) {
+    const schedule = [];
+    for (let t = 1; t <= totalTurns; t++) {
+      if (mode === 'quiz') {
+        // Чистые 50 вопросов, где каждый 3-й ход — спец-ивент внутри вопроса
+        if (t % 3 === 0) {
+          const ev = RANDOM_EVENTS[(Math.floor(t / 3) - 1) % RANDOM_EVENTS.length];
+          schedule.push({ turn: t, act: 'quiz', eventId: ev.id, label: ev.title });
+        } else {
+          schedule.push({ turn: t, act: 'quiz', eventId: null, label: 'ВОПРОС' });
+        }
+      } else if (mode === 'show') {
+        // Большое шоу: 50 клеток с чередованием вопросов, ивентов, блефа, спектра и ИИ-кейсов
+        if (t % 10 === 0) {
+          schedule.push({ turn: t, act: 'case', eventId: null, label: 'БОСС-КЕЙС' });
+        } else if (t % 7 === 0) {
+          schedule.push({ turn: t, act: 'wavelength', eventId: null, label: 'СПЕКТР' });
+        } else if (t % 5 === 0) {
+          schedule.push({ turn: t, act: 'bluff', eventId: null, label: 'БЛЕФ-РАУНД' });
+        } else if (t % 3 === 0) {
+          const ev = RANDOM_EVENTS[(Math.floor(t / 3) - 1) % RANDOM_EVENTS.length];
+          schedule.push({ turn: t, act: 'quiz', eventId: ev.id, label: ev.title });
+        } else {
+          schedule.push({ turn: t, act: 'quiz', eventId: null, label: 'ВОПРОС' });
+        }
+      } else {
+        schedule.push({ turn: t, act: mode, eventId: null, label: mode.toUpperCase() });
+      }
+    }
+    return schedule;
+  }
+
   createInitialState() {
+    const schedule = this.buildBoardSchedule(50, 'quiz');
     return {
-      screen: 'lobby', // 'lobby' | 'game' | ' podium'
-      gameMode: 'show', // 'show' | 'quiz' | 'bluff' | 'wavelength' | 'case'
-      currentAct: 'quiz', // Текущий активный суб-режим ('quiz' | 'bluff' | 'wavelength' | 'case')
+      screen: 'lobby', // 'lobby' | 'game' | 'podium'
+      gameMode: 'quiz', // 'quiz' (50 вопросов + ивенты) | 'show' (полный микс) | 'bluff' | 'wavelength' | 'case'
+      currentAct: 'quiz',
       totalTurnsTarget: 50,
       turnNumber: 1,
       activePlayerIndex: 0,
+      boardSchedule: schedule,
       players: JSON.parse(JSON.stringify(DEFAULT_PLAYERS)),
       usedQuestionIds: [],
       usedBluffIds: [],
@@ -61,40 +115,69 @@ class PartySyncApp {
       usedCaseIds: [],
       customQuestions: [],
 
-      // Состояние текущего хода Квиза
+      // Состояние текущего хода Квиза (без логических дыр)
       quiz: {
         currentQuestion: null,
         hiddenOptions: [],
         selectedOption: null,
         revealed: false,
+        timedOut: false,
         activeMultiplier: 1,
+        usedDoubleThisTurn: false,
+        usedAnyHintThisTurn: false,
+        betsLocked: false, // Блокируется после 50/50, опроса или подсказки
+        pendingJokerTargetMode: null, // 'ally' | 'pass' — когда игрок выбирает цель джокера
         allyPlayerId: null,
+        passedFromPlayerId: null,
         aiHintText: null,
         crowdVotes: {}, // playerId -> optionIndex
-        showCrowdVotes: false,
+        showCrowdPollPanel: false,
         sideBets: {}, // playerId -> 'pass' | 'fail'
         currentEvent: null,
-        boxResolved: false,
-        boxResultText: null,
+
+        // Состояние для Ивента VAULT (3 контейнера)
+        vaultBoxes: [], // [{ label: 'ALPHA', type: 'points', val: 350 }, ...]
+        vaultPickedIndex: null,
+        vaultResolved: false,
+        vaultResultText: null,
+
+        // Состояние для Ивента AUCTION (Аукцион вслепую)
+        auctionResolved: false,
+        auctionHighestBid: 100,
+        auctionLeaderId: null,
+
+        // Состояние для Ивента DUEL 1v1
+        duelOpponentId: null,
+        duelAnswers: {}, // playerId -> optionIndex (скрыто до ответа обоих)
+        duelResolved: false,
+        duelResultText: null,
+
+        // Состояние для Ивента DILEMMA (Сделка или Кража)
         dilemmaPartnerId: null,
-        dilemmaChoices: {}, // playerId -> 'coop' | 'betray'
+        dilemmaChoices: {}, // playerId -> 'coop' | 'betray' (скрыто до ответа обоих)
         dilemmaResolved: false,
         dilemmaResultText: null,
+
+        // Состояние для Ивента ALL_PLAY (Общий штурм — отвечают все 6)
+        allPlayAnswers: {}, // playerId -> optionIndex (скрыто до вскрытия)
+
         timerSeconds: 45,
+        timerMax: 45,
         timerRunning: false
       },
 
-      // Состояние хода «Правдоруб (Fibbage)»
+      // Состояние хода «Правдоруб (Блеф)»
       bluff: {
         currentItem: null,
         phase: 'collect', // 'collect' | 'vote' | 'reveal'
+        maskInputs: true, // Скрывает вводимый текст точками на общем экране Discord
         submittedBluffs: {}, // playerId -> text
         choices: [], // [{ id, text, authorIds: [], isTruth: false }]
-        votes: {}, // playerId -> choiceId
-        funnyVotes: {} // playerId -> choiceId
+        votes: {}, // playerId -> choiceId (скрыто до reveal)
+        resultLog: []
       },
 
-      // Состояние хода «На одной волне (Wavelength)»
+      // Состояние хода «Спектр (На одной волне)»
       wavelength: {
         card: null,
         targetValue: 50,
@@ -102,7 +185,8 @@ class PartySyncApp {
         clueText: '',
         teamGuess: 50,
         sideVotes: {}, // playerId -> 'left' | 'right'
-        revealed: false
+        revealed: false,
+        resultSummary: null
       },
 
       // Состояние хода «Кейс-Баттл с ИИ»
@@ -112,7 +196,7 @@ class PartySyncApp {
         answerText: '',
         isJudging: false,
         verdictData: null,
-        peerLikes: 0
+        votedPeerIds: [] // Чтобы один и тот же игрок не накручивал лайки бесконечно
       }
     };
   }
@@ -122,7 +206,7 @@ class PartySyncApp {
       const raw = localStorage.getItem(STATE_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.players) && parsed.players.length >= 2) {
+        if (parsed && Array.isArray(parsed.players) && parsed.players.length >= 2 && parsed.boardSchedule) {
           return parsed;
         }
       }
@@ -152,6 +236,7 @@ class PartySyncApp {
     sfx.play('click');
     const code = await this.p2p.initHost(this.p2p.roomCode);
     if (code) {
+      this.showToast(`Комната ${code} открыта. Ссылка скопирована при клике на код.`);
       this.render();
     }
   }
@@ -163,13 +248,23 @@ class PartySyncApp {
 
   handlePeerJoin(peerId, profile) {
     sfx.play('joker');
-    const existingIdx = this.state.players.findIndex(
-      (p) => p.id === profile.slotId || p.name.toLowerCase() === (profile.name || '').toLowerCase()
-    );
-    if (existingIdx !== -1) {
-      this.state.players[existingIdx].peerId = peerId;
-      if (profile.name) this.state.players[existingIdx].name = profile.name;
-      if (profile.role) this.state.players[existingIdx].role = profile.role;
+    let targetPlayer = null;
+    if (profile.slotId) {
+      targetPlayer = this.state.players.find((p) => p.id === profile.slotId);
+    }
+    if (!targetPlayer && profile.name) {
+      targetPlayer = this.state.players.find(
+        (p) => p.name.trim().toLowerCase() === profile.name.trim().toLowerCase()
+      );
+    }
+    if (!targetPlayer) {
+      targetPlayer = this.state.players.find((p) => !p.peerId);
+    }
+
+    if (targetPlayer) {
+      targetPlayer.peerId = peerId;
+      if (profile.name) targetPlayer.name = profile.name.trim();
+      if (profile.role) targetPlayer.role = profile.role;
     } else {
       this.state.players.push({
         id: `p_${Date.now().toString(36)}`,
@@ -190,17 +285,27 @@ class PartySyncApp {
     if (!player) return;
 
     const activePlayer = this.getActivePlayer();
+    const qState = this.state.quiz;
+    const evType = qState.currentEvent?.type;
 
-    if (action.kind === 'QUIZ_ANSWER' && activePlayer.id === player.id && !this.state.quiz.revealed) {
-      this.selectQuizOption(action.optionIndex);
-    } else if (action.kind === 'SIDE_BET' && activePlayer.id !== player.id && !this.state.quiz.revealed) {
+    if (action.kind === 'QUIZ_ANSWER' && !qState.revealed) {
+      if (evType === 'all_play') {
+        this.submitAllPlayAnswer(player.id, action.optionIndex);
+      } else if (evType === 'duel' && (player.id === activePlayer.id || player.id === qState.duelOpponentId)) {
+        this.submitDuelAnswer(player.id, action.optionIndex);
+      } else if (activePlayer.id === player.id) {
+        this.selectQuizOption(action.optionIndex);
+      }
+    } else if (action.kind === 'SIDE_BET' && activePlayer.id !== player.id && !qState.revealed && !qState.betsLocked) {
       this.setSideBet(player.id, action.bet);
-    } else if (action.kind === 'CROWD_VOTE' && !this.state.quiz.revealed) {
-      this.state.quiz.crowdVotes[player.id] = action.optionIndex;
+    } else if (action.kind === 'CROWD_VOTE' && activePlayer.id !== player.id && !qState.revealed) {
+      qState.crowdVotes[player.id] = action.optionIndex;
       this.saveState();
       this.render();
-    } else if (action.kind === 'USE_JOKER' && activePlayer.id === player.id && !this.state.quiz.revealed) {
-      this.useJoker(action.jokerId);
+    } else if (action.kind === 'DILEMMA_CHOICE' && !qState.dilemmaResolved) {
+      if (player.id === activePlayer.id || player.id === qState.dilemmaPartnerId) {
+        this.setDilemmaChoice(player.id, action.choice);
+      }
     } else if (action.kind === 'SUBMIT_BLUFF' && this.state.bluff.phase === 'collect') {
       this.submitPlayerBluff(player.id, action.text);
     } else if (action.kind === 'VOTE_BLUFF' && this.state.bluff.phase === 'vote') {
@@ -209,22 +314,15 @@ class PartySyncApp {
       this.state.wavelength.sideVotes[player.id] = action.dir;
       this.saveState();
       this.render();
-    } else if (action.kind === 'WAVELENGTH_SLIDER' && !this.state.wavelength.revealed) {
-      this.state.wavelength.teamGuess = Number(action.value);
-      this.saveState();
-      this.render();
-    } else if (action.kind === 'CASE_SUBMIT' && activePlayer.id === player.id) {
-      this.state.caseBattle.answerText = action.text;
-      this.saveState();
-      this.render();
-    } else if (action.kind === 'CASE_LIKE') {
-      this.addCasePeerLike();
     }
   }
 
   broadcastToPeers() {
     if (!this.p2p || !this.p2p.roomCode) return;
     const activePlayer = this.getActivePlayer();
+    const qState = this.state.quiz;
+    const hideQuestionForAuction = qState.currentEvent?.type === 'auction' && !qState.auctionResolved;
+
     this.p2p.broadcastState({
       screen: this.state.screen,
       currentAct: this.state.currentAct,
@@ -238,22 +336,27 @@ class PartySyncApp {
         jokers: p.jokers,
         peerId: p.peerId
       })),
-      quiz: this.state.quiz.currentQuestion
+      quiz: qState.currentQuestion
         ? {
-            question: this.state.quiz.currentQuestion.question,
-            options: this.state.quiz.currentQuestion.options,
-            hiddenOptions: this.state.quiz.hiddenOptions,
-            revealed: this.state.quiz.revealed,
-            sideBets: this.state.quiz.sideBets
+            question: hideQuestionForAuction ? 'АУКЦИОН ВСЛЕПУЮ: Торги за вопрос идут на главном экране' : qState.currentQuestion.question,
+            options: hideQuestionForAuction ? [] : qState.currentQuestion.options,
+            hiddenOptions: qState.hiddenOptions,
+            revealed: qState.revealed,
+            betsLocked: qState.betsLocked,
+            sideBets: qState.sideBets,
+            showCrowdPollPanel: qState.showCrowdPollPanel,
+            eventType: qState.currentEvent?.type || null,
+            duelOpponentId: qState.duelOpponentId,
+            dilemmaPartnerId: qState.dilemmaPartnerId
           }
         : null,
       bluff: this.state.bluff.currentItem
         ? {
             prompt: this.state.bluff.currentItem.prompt,
             phase: this.state.bluff.phase,
-            choices: this.state.bluff.choices.map((c) => ({ id: c.id, text: c.text })),
+            choices: this.state.bluff.choices.map((c) => ({ id: c.id, text: c.text, authorIds: c.authorIds })),
             submittedIds: Object.keys(this.state.bluff.submittedBluffs),
-            votes: this.state.bluff.votes
+            votedIds: Object.keys(this.state.bluff.votes)
           }
         : null,
       wavelength: this.state.wavelength.card
@@ -265,14 +368,6 @@ class PartySyncApp {
             revealed: this.state.wavelength.revealed,
             sideVotes: this.state.wavelength.sideVotes
           }
-        : null,
-      caseBattle: this.state.caseBattle.scenario
-        ? {
-            title: this.state.caseBattle.scenario.title,
-            situation: this.state.caseBattle.scenario.situation,
-            mutator: this.state.caseBattle.mutator,
-            answerText: this.state.caseBattle.answerText
-          }
         : null
     });
   }
@@ -282,7 +377,7 @@ class PartySyncApp {
     this.render();
   }
 
-  // --- УПРАВЛЕНИЕ ИГРОКАМИ И ХОДАМИ ---
+  // --- БАЗОВЫЕ МЕТОДЫ ПАРТИИ ---
   getActivePlayer() {
     return this.state.players[this.state.activePlayerIndex] || this.state.players[0];
   }
@@ -307,24 +402,24 @@ class PartySyncApp {
     }
   }
 
-  startNewGame(mode = null) {
+  startNewGame() {
     sfx.play('fanfare');
-    if (mode) this.state.gameMode = mode;
     this.state.screen = 'game';
     this.state.turnNumber = 1;
     this.state.activePlayerIndex = 0;
+    this.state.boardSchedule = this.buildBoardSchedule(this.state.totalTurnsTarget, this.state.gameMode);
     this.state.players.forEach((p) => {
       p.score = 0;
       p.streak = 0;
       p.jokers = ['fifty', 'double', 'ally', 'pass', 'crowd', 'ai_hint'];
     });
-    this.prepareTurn();
+    this.prepareTurnFromSchedule();
   }
 
-  switchAct(newAct) {
-    sfx.play('event');
+  switchActManual(newAct) {
+    sfx.play('click');
     this.state.currentAct = newAct;
-    this.prepareTurn(false);
+    this.prepareTurn(newAct, null);
   }
 
   nextTurn() {
@@ -338,22 +433,22 @@ class PartySyncApp {
 
     this.state.turnNumber += 1;
     this.state.activePlayerIndex = (this.state.activePlayerIndex + 1) % this.state.players.length;
-
-    // Если выбран режим «Большое Шоу (4 Акта)», автоматически переключаем раунды каждые 6 ходов (1 полный круг из 6 игроков!)
-    if (this.state.gameMode === 'show') {
-      const cycle = Math.floor((this.state.turnNumber - 1) / this.state.players.length) % 4;
-      const acts = ['quiz', 'bluff', 'wavelength', 'case'];
-      this.state.currentAct = acts[cycle];
-    } else {
-      this.state.currentAct = this.state.gameMode;
-    }
-
-    this.prepareTurn();
+    this.prepareTurnFromSchedule();
   }
 
-  prepareTurn(autoEvent = true) {
+  prepareTurnFromSchedule() {
+    const cell = this.state.boardSchedule[this.state.turnNumber - 1] || {
+      turn: this.state.turnNumber,
+      act: this.state.gameMode === 'show' ? 'quiz' : this.state.gameMode,
+      eventId: null
+    };
+    this.state.currentAct = cell.act;
+    const forcedEvent = cell.eventId ? RANDOM_EVENTS.find((e) => e.id === cell.eventId) || null : null;
+    this.prepareTurn(cell.act, forcedEvent);
+  }
+
+  prepareTurn(act, eventObj = null) {
     this.stopTimer();
-    const act = this.state.currentAct;
 
     if (act === 'quiz') {
       const pool = [...this.state.customQuestions, ...QUIZ_QUESTIONS];
@@ -365,39 +460,71 @@ class PartySyncApp {
       const picked = available[Math.floor(Math.random() * available.length)];
       this.state.usedQuestionIds.push(picked.id);
 
-      // Каждые 3 хода в Квизе — яркий Ивент!
-      let eventObj = null;
-      if (autoEvent && this.state.turnNumber > 1 && this.state.turnNumber % 3 === 0) {
-        eventObj = RANDOM_EVENTS[Math.floor(Math.random() * RANDOM_EVENTS.length)];
-        sfx.play('event');
-      }
+      if (eventObj) sfx.play('event');
 
-      const otherPlayers = this.state.players.filter((p) => p.id !== this.getActivePlayer().id);
-      const randomPartner = otherPlayers.length
-        ? otherPlayers[Math.floor(Math.random() * otherPlayers.length)].id
-        : null;
+      // Подготовка 3 сейфов для ивента VAULT
+      const vaultOutcomes = [
+        { type: 'points', val: 350, title: '+350 ОЧКОВ' },
+        { type: 'mult', val: 2, title: 'МНОЖИТЕЛЬ ×2' },
+        { type: 'trap', val: -100, title: 'ЛОВУШКА -100' }
+      ].sort(() => Math.random() - 0.5);
+
+      const vaultBoxes = ['ALPHA', 'BETA', 'GAMMA'].map((label, i) => ({
+        label,
+        ...vaultOutcomes[i]
+      }));
+
+      const tMax = eventObj?.type === 'blitz' ? 15 : 45;
 
       this.state.quiz = {
         currentQuestion: picked,
         hiddenOptions: [],
         selectedOption: null,
         revealed: false,
-        activeMultiplier: eventObj?.type === 'multiplier' ? eventObj.multiplier : 1,
+        timedOut: false,
+        activeMultiplier: eventObj?.type === 'steal_leader' ? 1.5 : 1,
+        usedDoubleThisTurn: false,
+        usedAnyHintThisTurn: false,
+        betsLocked: false,
+        pendingJokerTargetMode: null,
         allyPlayerId: null,
+        passedFromPlayerId: null,
         aiHintText: null,
         crowdVotes: {},
-        showCrowdVotes: false,
+        showCrowdPollPanel: false,
         sideBets: {},
         currentEvent: eventObj,
-        boxResolved: false,
-        boxResultText: null,
-        dilemmaPartnerId: randomPartner,
+
+        vaultBoxes,
+        vaultPickedIndex: null,
+        vaultResolved: false,
+        vaultResultText: null,
+
+        auctionResolved: false,
+        auctionHighestBid: 150,
+        auctionLeaderId: this.getActivePlayer().id,
+
+        duelOpponentId: null,
+        duelAnswers: {},
+        duelResolved: false,
+        duelResultText: null,
+
+        dilemmaPartnerId: null,
         dilemmaChoices: {},
         dilemmaResolved: false,
         dilemmaResultText: null,
-        timerSeconds: eventObj?.type === 'blitz' ? 15 : 45,
+
+        allPlayAnswers: {},
+
+        timerSeconds: tMax,
+        timerMax: tMax,
         timerRunning: false
       };
+
+      // Если выпал Турбо-Блиц (15 сек) — автоматически запускаем таймер!
+      if (eventObj?.type === 'blitz') {
+        this.startTimer();
+      }
     } else if (act === 'bluff') {
       let available = BLUFF_PROMPTS.filter((b) => !this.state.usedBluffIds.includes(b.id));
       if (available.length === 0) {
@@ -410,10 +537,11 @@ class PartySyncApp {
       this.state.bluff = {
         currentItem: picked,
         phase: 'collect',
+        maskInputs: true,
         submittedBluffs: {},
         choices: [],
         votes: {},
-        funnyVotes: {}
+        resultLog: []
       };
     } else if (act === 'wavelength') {
       let availIdx = WAVELENGTH_CARDS.map((_, i) => i).filter(
@@ -428,12 +556,13 @@ class PartySyncApp {
 
       this.state.wavelength = {
         card: WAVELENGTH_CARDS[idx],
-        targetValue: Math.floor(Math.random() * 84) + 8, // 8..92
+        targetValue: Math.floor(Math.random() * 84) + 8,
         peekTarget: false,
         clueText: '',
         teamGuess: 50,
         sideVotes: {},
-        revealed: false
+        revealed: false,
+        resultSummary: null
       };
     } else if (act === 'case') {
       let available = CASE_SCENARIOS.filter((c) => !this.state.usedCaseIds.includes(c.id));
@@ -451,7 +580,7 @@ class PartySyncApp {
         answerText: '',
         isJudging: false,
         verdictData: null,
-        peerLikes: 0
+        votedPeerIds: []
       };
     }
 
@@ -459,176 +588,405 @@ class PartySyncApp {
     this.render();
   }
 
-  // --- ЛОГИКА РЕЖИМА 1: КВИЗ-РУЛЕТКА 2.0 ---
-  triggerManualEvent() {
+  // --- ЖЕЛЕЗОБЕТОННАЯ ЛОГИКА КВИЗА, ДЖОКЕРОВ И ИВЕНТОВ ---
+  triggerManualEvent(eventId = null) {
     sfx.play('event');
-    const ev = RANDOM_EVENTS[Math.floor(Math.random() * RANDOM_EVENTS.length)];
-    this.state.quiz.currentEvent = ev;
-    if (ev.type === 'multiplier') this.state.quiz.activeMultiplier = ev.multiplier;
-    if (ev.type === 'blitz') this.state.quiz.timerSeconds = 15;
+    const ev = eventId
+      ? RANDOM_EVENTS.find((e) => e.id === eventId)
+      : RANDOM_EVENTS[Math.floor(Math.random() * RANDOM_EVENTS.length)];
+    if (!ev) return;
+
+    this.prepareTurn('quiz', ev);
+  }
+
+  setSideBet(playerId, betType) {
+    const qState = this.state.quiz;
+    if (qState.revealed || qState.betsLocked) {
+      this.showToast('Приём ставок зала уже закрыт (была использована подсказка или дан ответ).');
+      return;
+    }
+    sfx.play('click');
+    if (qState.sideBets[playerId] === betType) {
+      delete qState.sideBets[playerId];
+    } else {
+      qState.sideBets[playerId] = betType;
+    }
     this.saveState();
     this.render();
   }
 
-  resolveMysteryBox(takeSafe) {
-    const activePlayer = this.getActivePlayer();
-    this.state.quiz.boxResolved = true;
-    if (takeSafe) {
-      activePlayer.score += 150;
-      sfx.play('correct');
-      this.state.quiz.boxResultText = `${activePlayer.name} забирает надёжные +150 очков!`;
-    } else {
-      const outcomes = [
-        { delta: 400, text: '💎 ДЖЕКПОТ! В Чёрном Ящике лежало +400 очков!' },
-        { delta: 250, text: '🔥 Отличный улов! +250 очков из ящика!' },
-        { delta: -100, text: '💥 Ловушка мимика! Ящик откусил -100 очков.' },
-        { delta: 0, mult: 2, text: '⚡ Усилитель! Стоимость текущего вопроса удвоена (×2)!' }
-      ];
-      const out = outcomes[Math.floor(Math.random() * outcomes.length)];
-      activePlayer.score += out.delta;
-      if (out.mult) this.state.quiz.activeMultiplier *= out.mult;
-      sfx.play(out.delta >= 0 ? 'joker' : 'wrong');
-      this.state.quiz.boxResultText = out.text;
+  // Инициация Джокера (с проверкой условий и выбором цели для ALLY / PASS)
+  async initiateJoker(jokerId) {
+    const player = this.getActivePlayer();
+    const qState = this.state.quiz;
+    const q = qState.currentQuestion;
+    if (!player || !q || qState.revealed) return;
+    if (!player.jokers.includes(jokerId)) return;
+
+    // Блокируем джокеры во время нерешённого аукциона
+    if (qState.currentEvent?.type === 'auction' && !qState.auctionResolved) {
+      this.showToast('Сначала завершите торги аукциона!');
+      return;
     }
+
+    if (jokerId === 'double') {
+      if (qState.usedAnyHintThisTurn) {
+        this.showToast('Нельзя включить Ва-Банк ×2 после использования подсказок!');
+        return;
+      }
+      sfx.play('joker');
+      player.jokers = player.jokers.filter((j) => j !== 'double');
+      qState.activeMultiplier *= 2;
+      qState.usedDoubleThisTurn = true;
+      this.saveState();
+      this.render();
+      return;
+    }
+
+    if (jokerId === 'ally' || jokerId === 'pass') {
+      sfx.play('click');
+      qState.pendingJokerTargetMode = qState.pendingJokerTargetMode === jokerId ? null : jokerId;
+      this.render();
+      return;
+    }
+
+    if (jokerId === 'fifty') {
+      sfx.play('joker');
+      player.jokers = player.jokers.filter((j) => j !== 'fifty');
+      qState.usedAnyHintThisTurn = true;
+      qState.betsLocked = true; // Закрываем новые ставки зрителей
+      const wrongIndices = [0, 1, 2, 3].filter((i) => i !== q.answer);
+      wrongIndices.sort(() => Math.random() - 0.5);
+      qState.hiddenOptions = wrongIndices.slice(0, 2);
+      this.saveState();
+      this.render();
+      return;
+    }
+
+    if (jokerId === 'crowd') {
+      sfx.play('joker');
+      player.jokers = player.jokers.filter((j) => j !== 'crowd');
+      qState.usedAnyHintThisTurn = true;
+      qState.betsLocked = true;
+      qState.showCrowdPollPanel = true;
+      this.saveState();
+      this.render();
+      return;
+    }
+
+    if (jokerId === 'ai_hint') {
+      sfx.play('joker');
+      player.jokers = player.jokers.filter((j) => j !== 'ai_hint');
+      qState.usedAnyHintThisTurn = true;
+      qState.betsLocked = true;
+      qState.aiHintText = 'Запрос к Оракулу...';
+      this.render();
+      const hint = await aiClient.generateHint(q);
+      qState.aiHintText = hint;
+      this.saveState();
+      this.render();
+    }
+  }
+
+  confirmJokerTarget(targetPlayerId) {
+    const player = this.getActivePlayer();
+    const qState = this.state.quiz;
+    const mode = qState.pendingJokerTargetMode;
+    if (!mode || !targetPlayerId) return;
+
+    const targetPlayer = this.state.players.find((p) => p.id === targetPlayerId);
+    if (!targetPlayer || targetPlayer.id === player.id) return;
+
+    sfx.play('joker');
+    player.jokers = player.jokers.filter((j) => j !== mode);
+    qState.pendingJokerTargetMode = null;
+    qState.usedAnyHintThisTurn = true;
+    qState.betsLocked = true;
+
+    if (mode === 'ally') {
+      qState.allyPlayerId = targetPlayer.id;
+      qState.timerSeconds += 20;
+      qState.timerMax = Math.max(qState.timerMax, qState.timerSeconds);
+      this.showToast(`${targetPlayer.name} призван в Консилиум (+20с к таймеру)!`);
+    } else if (mode === 'pass') {
+      qState.passedFromPlayerId = player.id;
+      const newIdx = this.state.players.findIndex((p) => p.id === targetPlayer.id);
+      if (newIdx !== -1) {
+        this.state.activePlayerIndex = newIdx;
+        // Удаляем ставку нового отвечающего из пула зрителей, чтобы он не ставил сам на себя
+        delete qState.sideBets[targetPlayer.id];
+        qState.timerSeconds = 30;
+        qState.timerMax = 30;
+        this.showToast(`Вопрос принудительно передан игроку ${targetPlayer.name}!`);
+      }
+    }
+
+    this.saveState();
+    this.render();
+  }
+
+  // --- ЛОГИКА СПЕЦ-ИВЕНТОВ В КВИЗЕ ---
+  // 1. Сейфы (VAULT)
+  pickVaultBox(boxIndex) {
+    const qState = this.state.quiz;
+    if (qState.vaultResolved) return;
+    const activePlayer = this.getActivePlayer();
+
+    qState.vaultResolved = true;
+    qState.vaultPickedIndex = boxIndex;
+
+    if (boxIndex === -1) {
+      activePlayer.score += 100;
+      sfx.play('correct');
+      qState.vaultResultText = `${activePlayer.name} отказался от риска и забрал гарантированные +100 очков.`;
+    } else {
+      const box = qState.vaultBoxes[boxIndex];
+      if (box.type === 'points') {
+        activePlayer.score += box.val;
+        sfx.play('correct');
+        qState.vaultResultText = `Сейф ${box.label}: внутри оказалось +${box.val} очков для ${activePlayer.name}!`;
+      } else if (box.type === 'mult') {
+        qState.activeMultiplier *= box.val;
+        sfx.play('joker');
+        qState.vaultResultText = `Сейф ${box.label}: активирован множитель ×2 на текущий вопрос!`;
+      } else {
+        activePlayer.score += box.val;
+        sfx.play('wrong');
+        qState.vaultResultText = `Сейф ${box.label}: сработала ловушка (${box.val} очков)!`;
+      }
+    }
+    this.saveState();
+    this.render();
+  }
+
+  // 2. Аукцион вслепую (AUCTION)
+  placeAuctionBid(playerId, amount) {
+    const qState = this.state.quiz;
+    if (qState.auctionResolved) return;
+    sfx.play('click');
+    qState.auctionLeaderId = playerId;
+    qState.auctionHighestBid = amount;
+    this.saveState();
+    this.render();
+  }
+
+  lockAuctionWinner() {
+    const qState = this.state.quiz;
+    if (qState.auctionResolved) return;
+    sfx.play('reveal');
+    qState.auctionResolved = true;
+    const winnerIdx = this.state.players.findIndex((p) => p.id === qState.auctionLeaderId);
+    if (winnerIdx !== -1) {
+      this.state.activePlayerIndex = winnerIdx;
+      delete qState.sideBets[qState.auctionLeaderId];
+    }
+    this.saveState();
+    this.render();
+  }
+
+  // 3. Дуэль 1 на 1 (DUEL)
+  selectDuelOpponent(opponentId) {
+    const qState = this.state.quiz;
+    if (qState.duelOpponentId) return;
+    sfx.play('event');
+    qState.duelOpponentId = opponentId;
+    delete qState.sideBets[opponentId];
+    this.saveState();
+    this.render();
+  }
+
+  submitDuelAnswer(playerId, optionIndex) {
+    const qState = this.state.quiz;
+    if (qState.revealed) return;
+    sfx.play('click');
+    qState.duelAnswers[playerId] = optionIndex;
+
+    const activePlayer = this.getActivePlayer();
+    const oppId = qState.duelOpponentId;
+
+    // Если оба дуэлянта зафиксировали выбор — сразу вскрываем результат!
+    if (
+      oppId &&
+      typeof qState.duelAnswers[activePlayer.id] === 'number' &&
+      typeof qState.duelAnswers[oppId] === 'number'
+    ) {
+      this.resolveDuelOutcome();
+    } else {
+      this.saveState();
+      this.render();
+    }
+  }
+
+  resolveDuelOutcome() {
+    this.stopTimer();
+    const qState = this.state.quiz;
+    const q = qState.currentQuestion;
+    const p1 = this.getActivePlayer();
+    const p2 = this.state.players.find((p) => p.id === qState.duelOpponentId);
+    if (!p1 || !p2) return;
+
+    const a1 = qState.duelAnswers[p1.id];
+    const a2 = qState.duelAnswers[p2.id];
+    const p1Right = a1 === q.answer;
+    const p2Right = a2 === q.answer;
+
+    qState.revealed = true;
+    qState.duelResolved = true;
+    qState.selectedOption = a1;
+
+    if (p1Right && p2Right) {
+      p1.score += 300;
+      p2.score += 300;
+      sfx.play('correct');
+      qState.duelResultText = `Оба дуэлянта (${p1.name} и ${p2.name}) ответили верно и получают по +300 очков!`;
+    } else if (p1Right && !p2Right) {
+      p1.score += 400;
+      p2.score -= 100;
+      sfx.play('fanfare');
+      qState.duelResultText = `Чистая победа ${p1.name}! Он получает +300 за вопрос и забирает 100 очков у ${p2.name}!`;
+    } else if (!p1Right && p2Right) {
+      p2.score += 400;
+      p1.score -= 100;
+      sfx.play('fanfare');
+      qState.duelResultText = `Перехват! ${p2.name} выигрывает дуэль (+300 за вопрос и +100 со счёта ${p1.name})!`;
+    } else {
+      sfx.play('wrong');
+      qState.duelResultText = `Оба дуэлянта промахнулись! Очки остаются на месте.`;
+    }
+
+    this.resolveSideBets(p1Right);
+    this.saveState();
+    this.render();
+  }
+
+  // 4. Дилемма узника (DILEMMA) — с выбором партнёра и маскировкой до ответа обоих
+  selectDilemmaPartner(partnerId) {
+    const qState = this.state.quiz;
+    if (qState.dilemmaPartnerId) return;
+    sfx.play('click');
+    qState.dilemmaPartnerId = partnerId;
     this.saveState();
     this.render();
   }
 
   setDilemmaChoice(playerId, choice) {
+    const qState = this.state.quiz;
+    if (qState.dilemmaResolved) return;
     sfx.play('click');
-    this.state.quiz.dilemmaChoices[playerId] = choice;
-    const activePlayer = this.getActivePlayer();
-    const partnerId = this.state.quiz.dilemmaPartnerId;
+    qState.dilemmaChoices[playerId] = choice;
 
-    if (this.state.quiz.dilemmaChoices[activePlayer.id] && this.state.quiz.dilemmaChoices[partnerId]) {
-      const c1 = this.state.quiz.dilemmaChoices[activePlayer.id];
-      const c2 = this.state.quiz.dilemmaChoices[partnerId];
+    const activePlayer = this.getActivePlayer();
+    const partnerId = qState.dilemmaPartnerId;
+
+    if (partnerId && qState.dilemmaChoices[activePlayer.id] && qState.dilemmaChoices[partnerId]) {
+      const c1 = qState.dilemmaChoices[activePlayer.id];
+      const c2 = qState.dilemmaChoices[partnerId];
       const partner = this.state.players.find((p) => p.id === partnerId);
-      this.state.quiz.dilemmaResolved = true;
+      qState.dilemmaResolved = true;
 
       if (c1 === 'coop' && c2 === 'coop') {
         activePlayer.score += 200;
         if (partner) partner.score += 200;
         sfx.play('correct');
-        this.state.quiz.dilemmaResultText = `🤝 Настоящая командная синергия! ${activePlayer.name} и ${partner?.name} получают по +200 очков!`;
+        qState.dilemmaResultText = `СДЕЛКА СОСТОЯЛАСЬ: ${activePlayer.name} и ${partner?.name} получают по +200 очков.`;
       } else if (c1 === 'betray' && c2 === 'coop') {
         activePlayer.score += 350;
         if (partner) partner.score -= 100;
         sfx.play('joker');
-        this.state.quiz.dilemmaResultText = `🗡️ Коварный манёвр! ${activePlayer.name} забирает +350 очков, а доверчивый ${partner?.name} теряет 100!`;
+        qState.dilemmaResultText = `ПЕРЕХВАТ БАНКА: ${activePlayer.name} выбрал КРАЖУ (+350), а ${partner?.name} доверился (-100).`;
       } else if (c1 === 'coop' && c2 === 'betray') {
         activePlayer.score -= 100;
         if (partner) partner.score += 350;
         sfx.play('joker');
-        this.state.quiz.dilemmaResultText = `🗡️ Удар в спину! ${partner?.name} уносит +350 очков, оставив ${activePlayer.name} с -100!`;
+        qState.dilemmaResultText = `ПЕРЕХВАТ БАНКА: ${partner?.name} выбрал КРАЖУ (+350), а ${activePlayer.name} доверился (-100).`;
       } else {
         activePlayer.score -= 150;
         if (partner) partner.score -= 150;
         sfx.play('wrong');
-        this.state.quiz.dilemmaResultText = `💀 Оба нажали «Крысить»! Банк сгорел, оба теряют по -150 очков!`;
+        qState.dilemmaResultText = `ВЗАИМНЫЙ САБОТАЖ: Оба нажали КРАЖА — банк сгорел, оба теряют по -150 очков.`;
       }
     }
     this.saveState();
     this.render();
   }
 
-  setSideBet(playerId, betType) {
+  // 5. Общий штурм (ALL_PLAY) — отвечают все 6 игроков вслепую
+  submitAllPlayAnswer(playerId, optionIndex) {
+    const qState = this.state.quiz;
+    if (qState.revealed) return;
     sfx.play('click');
-    if (this.state.quiz.sideBets[playerId] === betType) {
-      delete this.state.quiz.sideBets[playerId];
-    } else {
-      this.state.quiz.sideBets[playerId] = betType;
+    qState.allPlayAnswers[playerId] = optionIndex;
+    this.saveState();
+    this.render();
+  }
+
+  revealAllPlayOutcome() {
+    this.stopTimer();
+    const qState = this.state.quiz;
+    const q = qState.currentQuestion;
+    qState.revealed = true;
+    qState.selectedOption = q.answer;
+
+    let winnersCount = 0;
+    this.state.players.forEach((p) => {
+      if (qState.allPlayAnswers[p.id] === q.answer) {
+        p.score += 250;
+        winnersCount++;
+      }
+    });
+
+    sfx.play(winnersCount > 0 ? 'correct' : 'wrong');
+    if (winnersCount > 0 && window.confetti) {
+      window.confetti({ particleCount: 50, spread: 65, origin: { y: 0.7 } });
     }
     this.saveState();
     this.render();
   }
 
-  async useJoker(jokerId, targetPlayerId = null) {
-    const player = this.getActivePlayer();
-    const q = this.state.quiz.currentQuestion;
-    if (!player || !q || this.state.quiz.revealed) return;
-    if (!player.jokers.includes(jokerId)) return;
-
-    if (jokerId === 'fifty') {
-      sfx.play('joker');
-      player.jokers = player.jokers.filter((j) => j !== 'fifty');
-      const wrongIndices = [0, 1, 2, 3].filter((i) => i !== q.answer);
-      wrongIndices.sort(() => Math.random() - 0.5);
-      this.state.quiz.hiddenOptions = wrongIndices.slice(0, 2);
-    } else if (jokerId === 'double') {
-      sfx.play('joker');
-      player.jokers = player.jokers.filter((j) => j !== 'double');
-      this.state.quiz.activeMultiplier *= 2;
-    } else if (jokerId === 'crowd') {
-      sfx.play('joker');
-      player.jokers = player.jokers.filter((j) => j !== 'crowd');
-      this.state.quiz.showCrowdVotes = true;
-    } else if (jokerId === 'ally') {
-      const otherPlayers = this.state.players.filter((p) => p.id !== player.id);
-      const chosenId = targetPlayerId || otherPlayers[0]?.id;
-      if (chosenId) {
-        sfx.play('joker');
-        player.jokers = player.jokers.filter((j) => j !== 'ally');
-        this.state.quiz.allyPlayerId = chosenId;
-      }
-    } else if (jokerId === 'pass') {
-      const otherPlayers = this.state.players.filter((p) => p.id !== player.id);
-      const chosenId = targetPlayerId || otherPlayers[Math.floor(Math.random() * otherPlayers.length)]?.id;
-      if (chosenId) {
-        sfx.play('joker');
-        player.jokers = player.jokers.filter((j) => j !== 'pass');
-        const newIdx = this.state.players.findIndex((p) => p.id === chosenId);
-        if (newIdx !== -1) {
-          this.state.activePlayerIndex = newIdx;
-        }
-      }
-    } else if (jokerId === 'ai_hint') {
-      sfx.play('joker');
-      player.jokers = player.jokers.filter((j) => j !== 'ai_hint');
-      this.state.quiz.aiHintText = '🤖 Нейро-Оракул анализирует вопрос...';
-      this.render();
-      const hint = await aiClient.generateHint(q);
-      this.state.quiz.aiHintText = hint;
-    }
-
-    this.saveState();
-    this.render();
-  }
-
+  // Стандартный ответ на вопрос (или после Аукциона / Блица / Экспроприации)
   selectQuizOption(index) {
-    if (this.state.quiz.revealed) return;
+    const qState = this.state.quiz;
+    if (qState.revealed) return;
+
+    // Если активен Аукцион и ещё не закрыты торги — блокируем
+    if (qState.currentEvent?.type === 'auction' && !qState.auctionResolved) {
+      this.showToast('Сначала зафиксируйте победителя аукциона!');
+      return;
+    }
+
     this.stopTimer();
 
-    const q = this.state.quiz.currentQuestion;
+    const q = qState.currentQuestion;
     const activePlayer = this.getActivePlayer();
     const isCorrect = index === q.answer;
 
-    this.state.quiz.selectedOption = index;
-    this.state.quiz.revealed = true;
+    qState.selectedOption = index;
+    qState.revealed = true;
 
-    let basePoints = q.points * this.state.quiz.activeMultiplier;
-    if (this.state.quiz.currentEvent?.type === 'blitz' && isCorrect) {
-      basePoints += this.state.quiz.currentEvent.bonus || 250;
+    const isAuction = qState.currentEvent?.type === 'auction';
+    let rewardPoints = isAuction
+      ? qState.auctionHighestBid * qState.activeMultiplier
+      : Math.round(q.points * qState.activeMultiplier);
+
+    if (qState.currentEvent?.type === 'blitz' && isCorrect) {
+      rewardPoints += qState.currentEvent.bonus || 250;
     }
 
     if (isCorrect) {
       sfx.play('correct');
-      activePlayer.score += basePoints;
+      activePlayer.score += rewardPoints;
       activePlayer.streak = (activePlayer.streak || 0) + 1;
 
-      // Бонус за серию из 3 верных ответов подряд
       if (activePlayer.streak >= 3) {
         activePlayer.score += 100;
       }
 
-      // Если был взят Джокер «Консилиум»
-      if (this.state.quiz.allyPlayerId) {
-        const ally = this.state.players.find((p) => p.id === this.state.quiz.allyPlayerId);
+      if (qState.allyPlayerId) {
+        const ally = this.state.players.find((p) => p.id === qState.allyPlayerId);
         if (ally) ally.score += 150;
       }
 
-      // Если ивент «Робин Гуд»
-      if (this.state.quiz.currentEvent?.type === 'steal_leader') {
+      if (qState.currentEvent?.type === 'steal_leader') {
         const sorted = [...this.state.players].sort((a, b) => b.score - a.score);
         const leader = sorted[0];
         if (leader && leader.id !== activePlayer.id) {
@@ -643,28 +1001,65 @@ class PartySyncApp {
     } else {
       sfx.play('wrong');
       activePlayer.streak = 0;
-      if (this.state.quiz.activeMultiplier > 1) {
-        activePlayer.score -= 150;
+
+      if (isAuction) {
+        activePlayer.score -= qState.auctionHighestBid;
+      } else if (qState.usedDoubleThisTurn) {
+        // Честный штраф -50% от базовой стоимости вопроса при промахе на Ва-Банке
+        activePlayer.score -= Math.round(q.points / 2);
+      } else if (qState.passedFromPlayerId) {
+        // Штраф за промах по переведённому вопросу
+        activePlayer.score -= 100;
       }
     }
 
-    // Расчёт ставок зрителей (Side Bets)
-    const betDelta = this.state.quiz.currentEvent?.type === 'multiplier' ? 150 : 100;
-    for (const [pid, bet] of Object.entries(this.state.quiz.sideBets)) {
-      const voter = this.state.players.find((p) => p.id === pid);
-      if (!voter) continue;
-      if ((bet === 'pass' && isCorrect) || (bet === 'fail' && !isCorrect)) {
-        voter.score += betDelta;
-      } else {
-        voter.score -= 50;
-      }
-    }
-
+    this.resolveSideBets(isCorrect);
     this.saveState();
     this.render();
   }
 
-  // --- ЛОГИКА РЕЖИМА 2: ПРАВДОРУБ (FIBBAGE БЛЕФ) ---
+  handleQuizTimeout() {
+    const qState = this.state.quiz;
+    if (qState.revealed) return;
+    this.stopTimer();
+    sfx.play('wrong');
+
+    const q = qState.currentQuestion;
+    const activePlayer = this.getActivePlayer();
+
+    qState.timedOut = true;
+    qState.revealed = true;
+    qState.selectedOption = -1;
+    activePlayer.streak = 0;
+
+    if (qState.currentEvent?.type === 'auction' && qState.auctionResolved) {
+      activePlayer.score -= qState.auctionHighestBid;
+    } else if (qState.usedDoubleThisTurn && q) {
+      activePlayer.score -= Math.round(q.points / 2);
+    } else if (qState.passedFromPlayerId) {
+      activePlayer.score -= 100;
+    }
+
+    this.resolveSideBets(false);
+    this.showToast(`ВРЕМЯ ВЫШЛО! Игрок ${activePlayer.name} не успел дать ответ.`);
+    this.saveState();
+    this.render();
+  }
+
+  resolveSideBets(isCorrect) {
+    const qState = this.state.quiz;
+    for (const [pid, bet] of Object.entries(qState.sideBets)) {
+      const voter = this.state.players.find((p) => p.id === pid);
+      if (!voter) continue;
+      if ((bet === 'pass' && isCorrect) || (bet === 'fail' && !isCorrect)) {
+        voter.score += 100;
+      } else {
+        voter.score -= 50;
+      }
+    }
+  }
+
+  // --- ЛОГИКА РЕЖИМА 2: ПРАВДОРУБ (БЛЕФ БЕЗ СПОЙЛЕРОВ) ---
   submitPlayerBluff(playerId, text) {
     if (!text || !text.trim()) return;
     sfx.play('click');
@@ -678,7 +1073,6 @@ class PartySyncApp {
     const item = this.state.bluff.currentItem;
     const choices = [];
 
-    // 1. Настоящая правда
     choices.push({
       id: 'truth',
       text: item.truth,
@@ -686,26 +1080,31 @@ class PartySyncApp {
       isTruth: true
     });
 
-    // 2. Блефы от игроков
     for (const [pid, text] of Object.entries(this.state.bluff.submittedBluffs)) {
-      if (text.toLowerCase() === item.truth.toLowerCase()) continue;
-      const existing = choices.find((c) => c.text.toLowerCase() === text.toLowerCase());
+      const clean = text.trim();
+      if (!clean) continue;
+      if (clean.toLowerCase() === item.truth.toLowerCase()) {
+        // Если кто-то случайно вписал точную правду — начисляем ему бонус +300 сразу!
+        const p = this.state.players.find((pl) => pl.id === pid);
+        if (p) p.score += 300;
+        continue;
+      }
+      const existing = choices.find((c) => c.text.toLowerCase() === clean.toLowerCase());
       if (existing) {
         existing.authorIds.push(pid);
       } else {
         choices.push({
           id: `bluff_${pid}`,
-          text,
+          text: clean,
           authorIds: [pid],
           isTruth: false
         });
       }
     }
 
-    // 3. Добиваем правдоподобными заготовками (идеально, если играете на одном экране в ДС без ввода с телефонов!)
-    const targetCount = useQuickDecoys ? 5 : Math.max(4, choices.length + 1);
+    const minChoices = useQuickDecoys ? 5 : Math.max(4, choices.length + 1);
     for (const decoy of item.decoyBluffs) {
-      if (choices.length >= targetCount) break;
+      if (choices.length >= minChoices) break;
       if (!choices.some((c) => c.text.toLowerCase() === decoy.toLowerCase())) {
         choices.push({
           id: `decoy_${choices.length}`,
@@ -724,6 +1123,15 @@ class PartySyncApp {
   }
 
   voteBluffChoice(playerId, choiceId) {
+    const chosen = this.state.bluff.choices.find((c) => c.id === choiceId);
+    if (!chosen) return;
+
+    // Запрет голосовать за свой собственный блеф!
+    if (chosen.authorIds.includes(playerId)) {
+      this.showToast('Нельзя голосовать за собственный блеф — выберите другой вариант!');
+      return;
+    }
+
     sfx.play('click');
     this.state.bluff.votes[playerId] = choiceId;
     this.saveState();
@@ -733,6 +1141,7 @@ class PartySyncApp {
   revealBluffResults() {
     sfx.play('fanfare');
     this.state.bluff.phase = 'reveal';
+    const logs = [];
 
     for (const [voterId, choiceId] of Object.entries(this.state.bluff.votes)) {
       const voter = this.state.players.find((p) => p.id === voterId);
@@ -740,18 +1149,24 @@ class PartySyncApp {
       if (!voter || !chosen) continue;
 
       if (chosen.isTruth) {
-        voter.score += 400; // Угадал правду!
+        voter.score += 400;
+        logs.push(`${voter.name} вычислил настоящую правду (+400)`);
       } else if (chosen.authorIds.length > 0) {
-        // Игрок попался на блеф коллеги -> автор блефа получает +300 очков!
         chosen.authorIds.forEach((authorId) => {
           if (authorId !== voterId) {
             const author = this.state.players.find((p) => p.id === authorId);
-            if (author) author.score += 300;
+            if (author) {
+              author.score += 300;
+              logs.push(`${voter.name} попался на ложь игрока ${author.name} (+300 для ${author.name})`);
+            }
           }
         });
+      } else {
+        logs.push(`${voter.name} попался на ловушку системы`);
       }
     }
 
+    this.state.bluff.resultLog = logs;
     if (window.confetti) {
       window.confetti({ particleCount: 50, spread: 70, origin: { y: 0.65 } });
     }
@@ -759,38 +1174,81 @@ class PartySyncApp {
     this.render();
   }
 
-  // --- ЛОГИКА РЕЖИМА 3: НА ОДНОЙ ВОЛНЕ (WAVELENGTH) ---
-  revealWavelength() {
-    if (this.state.wavelength.revealed) return;
-    this.state.wavelength.revealed = true;
+  // --- ЛОГИКА РЕЖИМА 3: СПЕКТР (WAVELENGTH БЕЗ СПОЙЛЕРОВ НА СТРИМЕ) ---
+  copyWavelengthTargetToClipboard() {
+    const w = this.state.wavelength;
+    const activePlayer = this.getActivePlayer();
+    const secretMsg = `[SYNC // 50] Секретная мишень для ${activePlayer.name}: ${w.targetValue}% (Шкала: 0% «${w.card.left}» — 100% «${w.card.right}»)`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(secretMsg);
+      sfx.play('joker');
+      this.showToast(`Секретная мишень скопирована в буфер (на экране НЕ показана)! Отправьте Ctrl+V игроку ${activePlayer.name} в личку Discord.`);
+    }
+  }
 
-    const diff = Math.abs(this.state.wavelength.targetValue - this.state.wavelength.teamGuess);
+  revealWavelength() {
+    const w = this.state.wavelength;
+    if (w.revealed) return;
+    w.revealed = true;
+
+    const diff = Math.abs(w.targetValue - w.teamGuess);
     const activePlayer = this.getActivePlayer();
 
-    let points = 0;
-    if (diff <= 4) points = 500;
-    else if (diff <= 10) points = 350;
-    else if (diff <= 18) points = 200;
+    let telepathPts = 0;
+    let teamPts = 0;
+    let zoneName = 'Мимо цели';
 
-    if (points > 0) {
+    if (diff <= 4) {
+      telepathPts = 400;
+      teamPts = 200;
+      zoneName = 'ТОЧНО В ЯБЛОЧКО (±4%)';
+    } else if (diff <= 10) {
+      telepathPts = 300;
+      teamPts = 150;
+      zoneName = 'БЛИЖНЯЯ ЗОНА (±10%)';
+    } else if (diff <= 18) {
+      telepathPts = 150;
+      teamPts = 100;
+      zoneName = 'СРЕДНЯЯ ЗОНА (±18%)';
+    }
+
+    if (telepathPts > 0) {
       sfx.play('correct');
-      activePlayer.score += points;
-      if (window.confetti && points >= 350) {
+      activePlayer.score += telepathPts;
+      this.state.players
+        .filter((p) => p.id !== activePlayer.id)
+        .forEach((p) => {
+          p.score += teamPts;
+        });
+      if (window.confetti && telepathPts >= 300) {
         window.confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
       }
     } else {
       sfx.play('wrong');
     }
 
-    // Проверяем ставки остальных игроков «Левее / Правее»
-    const actualDir = this.state.wavelength.targetValue < this.state.wavelength.teamGuess ? 'left' : 'right';
-    for (const [pid, guessedDir] of Object.entries(this.state.wavelength.sideVotes)) {
-      const p = this.state.players.find((pl) => pl.id === pid);
-      if (!p) continue;
-      if (diff <= 4 || guessedDir === actualDir) {
-        p.score += 150;
+    // Бонус за ставку ЛЕВЕЕ / ПРАВЕЕ (если не попали идеально в яблочко ±2%)
+    let sideWinners = [];
+    if (diff > 2) {
+      const actualDir = w.targetValue < w.teamGuess ? 'left' : 'right';
+      for (const [pid, guessedDir] of Object.entries(w.sideVotes)) {
+        if (guessedDir === actualDir) {
+          const p = this.state.players.find((pl) => pl.id === pid);
+          if (p) {
+            p.score += 150;
+            sideWinners.push(p.name);
+          }
+        }
       }
     }
+
+    w.resultSummary = {
+      diff,
+      zoneName,
+      telepathPts,
+      teamPts,
+      sideWinners
+    };
 
     this.saveState();
     this.render();
@@ -807,7 +1265,7 @@ class PartySyncApp {
   toggleVoiceDictation() {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) {
-      alert('Ваш браузер не поддерживает голосовой ввод Web Speech API (лучше всего работает в Chrome/Edge).');
+      this.showToast('Голосовой ввод Web Speech API поддерживается в Chrome / Edge.');
       return;
     }
 
@@ -851,7 +1309,7 @@ class PartySyncApp {
       this.state.caseBattle.answerText = textInput.value.trim();
     }
     if (!this.state.caseBattle.answerText) {
-      this.state.caseBattle.answerText = 'Команда решила вопрос устной дипломатией в голосовом канале Discord!';
+      this.state.caseBattle.answerText = 'Устный ответ озвучен в голосовом канале Discord.';
     }
 
     this.state.caseBattle.isJudging = true;
@@ -878,35 +1336,53 @@ class PartySyncApp {
     this.render();
   }
 
-  addCasePeerLike() {
-    sfx.play('joker');
-    this.state.caseBattle.peerLikes += 1;
+  toggleCasePeerVote(voterId) {
+    const cb = this.state.caseBattle;
     const activePlayer = this.getActivePlayer();
-    activePlayer.score += 50;
+    if (voterId === activePlayer.id) return;
+
+    sfx.play('click');
+    if (cb.votedPeerIds.includes(voterId)) {
+      cb.votedPeerIds = cb.votedPeerIds.filter((id) => id !== voterId);
+      activePlayer.score -= 50;
+    } else {
+      cb.votedPeerIds.push(voterId);
+      activePlayer.score += 50;
+    }
     this.saveState();
     this.render();
   }
 
-  // --- ТАЙМЕР ---
+  // --- ТАЙМЕР С РЕАЛЬНЫМ ИСТЕЧЕНИЕМ ВРЕМЕНИ ---
+  startTimer() {
+    this.stopTimer();
+    this.state.quiz.timerRunning = true;
+    this.timerInterval = setInterval(() => {
+      if (this.state.quiz.timerSeconds > 1) {
+        this.state.quiz.timerSeconds -= 1;
+        sfx.play(this.state.quiz.timerSeconds <= 5 ? 'urgent_tick' : 'tick');
+        const timerEl = document.getElementById('quiz-timer-val');
+        const barEl = document.getElementById('quiz-timer-bar');
+        if (timerEl) timerEl.textContent = `${String(this.state.quiz.timerSeconds).padStart(2, '0')}s`;
+        if (barEl) {
+          const pct = Math.max(0, (this.state.quiz.timerSeconds / (this.state.quiz.timerMax || 45)) * 100);
+          barEl.style.width = `${pct}%`;
+        }
+      } else {
+        this.state.quiz.timerSeconds = 0;
+        this.handleQuizTimeout();
+      }
+    }, 1000);
+  }
+
   toggleTimer() {
     if (this.state.quiz.timerRunning) {
       this.stopTimer();
+      this.render();
     } else {
-      this.state.quiz.timerRunning = true;
-      this.timerInterval = setInterval(() => {
-        if (this.state.quiz.timerSeconds > 0) {
-          this.state.quiz.timerSeconds -= 1;
-          sfx.play(this.state.quiz.timerSeconds <= 5 ? 'urgent_tick' : 'tick');
-          const timerEl = document.getElementById('quiz-timer-val');
-          if (timerEl) timerEl.textContent = `${this.state.quiz.timerSeconds}с`;
-        } else {
-          this.stopTimer();
-          sfx.play('wrong');
-          this.render();
-        }
-      }, 1000);
+      this.startTimer();
+      this.render();
     }
-    this.render();
   }
 
   stopTimer() {
@@ -928,15 +1404,13 @@ class PartySyncApp {
     this.render();
   }
 
-  // --- МОДАЛКИ: YANDEX CLOUD AI & P2P ROOM ---
+  // --- НАСТРОЙКИ YANDEX CLOUD AI ---
   openAiModal() {
-    const modal = document.getElementById('ai-modal');
-    if (modal) modal.classList.remove('hidden');
+    document.getElementById('ai-modal')?.classList.remove('hidden');
   }
 
   closeAiModal() {
-    const modal = document.getElementById('ai-modal');
-    if (modal) modal.classList.add('hidden');
+    document.getElementById('ai-modal')?.classList.add('hidden');
   }
 
   async saveAndTestAiConfig() {
@@ -948,58 +1422,59 @@ class PartySyncApp {
     aiClient.saveConfig({ apiKey, folderId, model, customEndpoint });
     const statusEl = document.getElementById('yc-status-msg');
     if (statusEl) {
-      statusEl.innerHTML = `<span class="text-indigo-400">⏳ Сохранено в localStorage! Проверяем связь с YandexGPT...</span>`;
+      statusEl.innerHTML = `<span class="text-zinc-300 font-mono-code">Проверка соединения с YandexGPT...</span>`;
     }
 
     if (!apiKey.trim()) {
-      if (statusEl) statusEl.innerHTML = `<span class="text-amber-400">Ключ очищен. Игра работает на встроенной базе (150+ карточек).</span>`;
+      if (statusEl) statusEl.innerHTML = `<span class="text-amber-400">Ключ очищен. Используется встроенная база (150+ карточек).</span>`;
       this.render();
       return;
     }
 
     try {
-      const reply = await aiClient.complete('Ответь одним предложением.', 'Поприветствуй команду из 3 менеджеров и 3 прогеров!', 0.6);
+      const reply = await aiClient.complete('Ответь одним коротким предложением.', 'Проверка связи со студией.', 0.5);
       if (statusEl) {
-        statusEl.innerHTML = `<span class="text-emerald-400">✅ Успех! Ответ YandexGPT: «${reply}»</span>`;
+        statusEl.innerHTML = `<span class="text-emerald-400 font-mono-code">СОЕДИНЕНИЕ УСТАНОВЛЕНО: «${this.escapeHtml(reply)}»</span>`;
       }
       sfx.play('correct');
     } catch (err) {
       if (statusEl) {
-        statusEl.innerHTML = `<span class="text-amber-300">⚠️ Ключ сохранён, но браузер заблокировал прямой CORS-запрос (${err.message}). Запустите локальный мост <code>node yandex-bridge.mjs</code> в терминале для 100% работы с GitHub Pages!</span>`;
+        statusEl.innerHTML = `<span class="text-amber-400">Ключ сохранён в localStorage, но прямой браузерный запрос заблокирован CORS (${this.escapeHtml(
+          err.message
+        )}). Запустите в терминале: <code>node yandex-bridge.mjs</code></span>`;
       }
     }
   }
 
   async generateAiPackFromModal() {
     const topicInput = document.getElementById('ai-topic-input');
-    const topic = topicInput?.value?.trim() || 'Кино, видеоигры, курьёзы в IT и менеджменте';
+    const topic = topicInput?.value?.trim() || 'Технологии, игры, кино и переговоры';
     const statusEl = document.getElementById('yc-status-msg');
 
     if (!aiClient.isConfigured()) {
-      if (statusEl) statusEl.innerHTML = `<span class="text-rose-400">Сначала введите API-ключ Yandex Cloud выше!</span>`;
+      if (statusEl) statusEl.innerHTML = `<span class="text-rose-400">Сначала укажите API-ключ Yandex Cloud выше.</span>`;
       return;
     }
 
     try {
-      if (statusEl) statusEl.innerHTML = `<span class="text-indigo-400">✨ YandexGPT генерирует 5 свежих вопросов по теме «${topic}»...</span>`;
+      if (statusEl) statusEl.innerHTML = `<span class="text-zinc-300 font-mono-code">Генерация 5 вопросов по теме «${this.escapeHtml(topic)}»...</span>`;
       const newQuestions = await aiClient.generateCustomQuestions(topic, 5);
       if (newQuestions.length > 0) {
         this.state.customQuestions = [...newQuestions, ...this.state.customQuestions];
         this.saveState();
         sfx.play('fanfare');
         if (statusEl) {
-          statusEl.innerHTML = `<span class="text-emerald-400">🎉 Добавлено ${newQuestions.length} новых вопросов от YandexGPT в начало колоды!</span>`;
+          statusEl.innerHTML = `<span class="text-emerald-400 font-mono-code">ГОТОВО: +${newQuestions.length} новых вопросов добавлены в начало очереди!</span>`;
         }
-        this.render();
       }
     } catch (err) {
       if (statusEl) {
-        statusEl.innerHTML = `<span class="text-rose-400">Ошибка генерации: ${err.message}</span>`;
+        statusEl.innerHTML = `<span class="text-rose-400">Ошибка: ${this.escapeHtml(err.message)}</span>`;
       }
     }
   }
 
-  // --- РЕНДЕРИНГ ИНТЕРФЕЙСА ---
+  // --- РЕНДЕРИНГ STUDIO BROADCAST UI ---
   render() {
     const root = document.getElementById('app-root');
     if (!root) return;
@@ -1014,7 +1489,12 @@ class PartySyncApp {
     root.innerHTML = `
       <div class="min-h-screen flex flex-col">
         ${this.renderHeader()}
-        <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+        <div id="studio-toast" class="${
+          this.toastMessage ? '' : 'hidden'
+        } fixed bottom-5 right-5 z-50 bg-[#facc15] text-black font-mono-code font-bold text-xs px-4 py-3 border-2 border-black shadow-[4px_4px_0px_#000]">
+          ${this.escapeHtml(this.toastMessage || '')}
+        </div>
+        <main class="flex-1 max-w-[1360px] w-full mx-auto px-4 sm:px-6 py-6">
           ${
             this.state.screen === 'lobby'
               ? this.renderLobby()
@@ -1039,58 +1519,56 @@ class PartySyncApp {
       : '';
 
     return `
-      <header class="border-b border-white/10 bg-[#090b12]/80 backdrop-blur-xl sticky top-0 z-30">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
-          <div class="flex items-center gap-3">
-            <button id="btn-home-logo" class="flex items-center gap-2.5 text-left group">
-              <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-indigo-500/25 group-hover:scale-105 transition">
-                <i data-lucide="zap" class="w-5 h-5 text-white"></i>
+      <header class="border-b border-zinc-800 bg-[#09090b] sticky top-0 z-30">
+        <div class="max-w-[1360px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+          <button id="btn-home-logo" class="flex items-center gap-3 text-left group">
+            <div class="px-2.5 py-1.5 bg-[#facc15] text-black font-display font-black text-sm tracking-tight border border-black shadow-[2px_2px_0px_#fff]">
+              SYNC // 50
+            </div>
+            <div class="hidden sm:block">
+              <div class="font-mono-code font-bold text-xs text-zinc-200 tracking-wider uppercase">
+                BROADCAST GAME DECK
               </div>
-              <div>
-                <div class="font-display font-extrabold text-lg tracking-tight leading-none flex items-center gap-2">
-                  ВЕЧЕРНИЙ СИНК
-                  <span class="text-[11px] font-mono-code uppercase px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">6 Players Edition</span>
-                </div>
-                <div class="text-xs text-slate-400">Интерактивное шоу для Discord • 3 Прогера & 3 Менеджера</div>
-              </div>
-            </button>
-          </div>
+              <div class="text-[11px] text-zinc-500 font-mono-code">3 DEV vs 3 MGR • DISCORD EDITION</div>
+            </div>
+          </button>
 
-          <!-- Табло командного зачёта Прогеры vs Менеджеры -->
-          <div class="hidden md:flex items-center gap-3 px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-medium">
-            <span class="flex items-center gap-1.5 text-indigo-300">
-              💻 Прогеры: <strong class="font-mono-code text-white text-sm">${devScore}</strong>
-            </span>
-            <span class="text-slate-600">vs</span>
-            <span class="flex items-center gap-1.5 text-pink-300">
-              📊 Менеджеры: <strong class="font-mono-code text-white text-sm">${mgrScore}</strong>
-            </span>
+          <!-- Командный счёт -->
+          <div class="hidden md:flex items-center border border-zinc-800 bg-[#121215] divide-x divide-zinc-800 font-mono-code text-xs">
+            <div class="px-3.5 py-1.5 flex items-center gap-2">
+              <span class="w-2 h-2 bg-blue-500"></span>
+              <span class="text-zinc-400">DEV TEAM:</span>
+              <strong class="text-white text-sm">${devScore}</strong>
+            </div>
+            <div class="px-3.5 py-1.5 flex items-center gap-2">
+              <span class="w-2 h-2 bg-rose-500"></span>
+              <span class="text-zinc-400">MGR TEAM:</span>
+              <strong class="text-white text-sm">${mgrScore}</strong>
+            </div>
           </div>
 
           <div class="flex items-center gap-2">
             ${
               this.p2p.roomCode
-                ? `<button id="btn-copy-room" data-url="${roomUrl}" class="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-mono-code flex items-center gap-1.5 hover:bg-emerald-500/25 transition" title="Нажмите, чтобы скопировать ссылку на пульт для игроков в Discord">
-                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                    Комната: <strong>${this.p2p.roomCode}</strong> (${this.p2p.connections.size} подкл.)
+                ? `<button id="btn-copy-room" data-url="${roomUrl}" class="btn-tactile px-3 py-1.5 bg-emerald-950/80 border-emerald-500/60 text-emerald-300 text-xs font-mono-code flex items-center gap-2">
+                    <span class="w-2 h-2 bg-emerald-400"></span>
+                    ROOM: <strong>${this.p2p.roomCode}</strong> [${this.p2p.connections.size}]
                     <i data-lucide="copy" class="w-3.5 h-3.5"></i>
                   </button>`
-                : `<button id="btn-start-p2p" class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium flex items-center gap-1.5 transition">
-                    <i data-lucide="smartphone" class="w-3.5 h-3.5 text-indigo-400"></i>
-                    <span class="hidden sm:inline">Пульты с телефонов (P2P)</span>
+                : `<button id="btn-start-p2p" class="btn-tactile px-3 py-1.5 bg-[#18181c] hover:bg-zinc-800 text-zinc-200 text-xs font-mono-code flex items-center gap-1.5">
+                    <i data-lucide="radio" class="w-3.5 h-3.5 text-[#facc15]"></i>
+                    <span class="hidden sm:inline">P2P ПУЛЬТЫ</span>
                   </button>`
             }
 
-            <button id="btn-open-ai" class="px-3 py-1.5 rounded-xl ${
-              aiReady
-                ? 'bg-fuchsia-500/20 border-fuchsia-500/40 text-fuchsia-200'
-                : 'bg-white/5 border-white/10 text-slate-300'
-            } border hover:bg-white/15 text-xs font-medium flex items-center gap-1.5 transition">
-              <i data-lucide="sparkles" class="w-3.5 h-3.5 ${aiReady ? 'text-fuchsia-400' : 'text-slate-400'}"></i>
-              <span class="hidden sm:inline">${aiReady ? 'YandexGPT Активен' : 'Yandex Cloud AI'}</span>
+            <button id="btn-open-ai" class="btn-tactile px-3 py-1.5 ${
+              aiReady ? 'bg-blue-950/80 border-blue-500/60 text-blue-200' : 'bg-[#18181c] text-zinc-300'
+            } text-xs font-mono-code flex items-center gap-1.5">
+              <i data-lucide="terminal" class="w-3.5 h-3.5 ${aiReady ? 'text-blue-400' : 'text-zinc-400'}"></i>
+              <span class="hidden sm:inline">${aiReady ? 'YANDEX GPT: ON' : 'YANDEX API'}</span>
             </button>
 
-            <button id="btn-toggle-sound" class="p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 transition" title="Звуковые эффекты">
+            <button id="btn-toggle-sound" class="btn-tactile p-2 bg-[#18181c] hover:bg-zinc-800 text-zinc-300" title="Звук">
               <i data-lucide="${sfx.muted ? 'volume-x' : 'volume-2'}" class="w-4 h-4"></i>
             </button>
           </div>
@@ -1102,86 +1580,83 @@ class PartySyncApp {
   renderLobby() {
     const modes = [
       {
-        id: 'show',
-        title: '🎰 Большое Вечернее Шоу (Все 4 режима)',
-        badge: 'ХИТ ВЕЧЕРА',
-        desc: 'Каждые 6 ходов (круг игроков) игра меняет раунд: 1) Квиз с джокерами и ставками → 2) Правдоруб (Блеф) → 3) На одной волне → 4) Кейс-Баттл с ИИ!',
-        color: 'from-indigo-500/20 via-purple-500/15 to-pink-500/20 border-indigo-500/40'
+        id: 'quiz',
+        code: 'MODE 01 // TACTICAL 50',
+        title: '50 Вопросов: Тактический Режим',
+        badge: 'ОСНОВНОЙ РЕЖИМ',
+        desc: 'Поочерёдная игра на 50 ходов с полным набором рабочих механик: рынок ставок зала (Prediction Pool), 6 тактических джокеров с выбором цели и 7 интерактивных спец-событий (Аукцион вслепую, Дуэль 1v1, Дилемма узника, Три сейфа, Общий штурм).'
       },
       {
-        id: 'quiz',
-        title: '🎯 50 Вопросов 2.0 (Джокеры + Ивенты + Ставки)',
-        badge: 'КЛАССИКА НА СТЕРОИДАХ',
-        desc: 'Ваш любимый поочерёдный формат, но теперь с 6 Джокерами, ставками зрителей на каждом вопросе, Чёрным Ящиком и Дилеммой заключённого!',
-        color: 'from-blue-500/15 to-indigo-500/10 border-white/10'
+        id: 'show',
+        code: 'MODE 02 // BROADCAST MIX',
+        title: 'Комбинированный Марафон (Все 4 формата на одной доске)',
+        badge: 'МИКС',
+        desc: 'На треке из 50 ходов автоматически чередуются: тактические вопросы, раунды «Правдоруб» (блеф), «Спектр» (Wavelength) и «Кейс-Баттл» с ИИ-судьёй.'
       },
       {
         id: 'bluff',
-        title: '🎭 Правдоруб (Fibbage Блеф-Клуб)',
-        badge: 'ИНТРИГА',
-        desc: 'Безумные реальные факты с пропуском. Придумай правдоподобную ложь, замани коллег в ловушку и найди настоящую правду!',
-        color: 'from-pink-500/15 to-rose-500/10 border-white/10'
+        code: 'MODE 03 // BLUFF CLUB',
+        title: 'Правдоруб (Блеф-раунды)',
+        badge: 'FIBBAGE',
+        desc: 'Реальные исторические и техно-факты с пропуском. Ввод блефов защищён маскировкой от подсматривания на стриме в Discord (+400 за правду, +300 за каждого пойманного коллегу).'
       },
       {
         id: 'wavelength',
-        title: '📡 На одной волне (Wavelength)',
-        badge: 'ЧТЕНИЕ МЫСЛЕЙ',
-        desc: 'Ведущий хода видит секретный процент между двумя полюсами и даёт ассоциацию. Команда в Discord спорит и крутит стрелку спидометра!',
-        color: 'from-emerald-500/15 to-teal-500/10 border-white/10'
+        code: 'MODE 04 // SPECTRUM',
+        title: 'Спектр (На одной волне)',
+        badge: 'КОМАНДНЫЙ',
+        desc: 'Телепат получает секретную координату в буфер обмена (без засвета на экране стрима) и даёт ассоциацию между двумя полюсами. Команда настраивает ползунок.'
       },
       {
         id: 'case',
-        title: '🤖 Кейс-Баттл с YandexGPT',
-        badge: 'ИМПРОВИЗАЦИЯ',
-        desc: 'Весёлые рабочие и жизненные катастрофы + секретное условие-мутатор. Озвучь свой план спасения за 45 секунд и получи оценку от ИИ и коллег!',
-        color: 'from-amber-500/15 to-orange-500/10 border-white/10'
+        code: 'MODE 05 // AI ARBITER',
+        title: 'Кейс-Баттл (Кризис + Мутатор)',
+        badge: 'YANDEX GPT',
+        desc: 'Рабочие и жизненные катастрофы с обязательным секретным условием. Голосовой ввод речи и вердикт от нейросети + голосование зала.'
       }
     ];
 
     return `
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start animate-pop">
-        <!-- Левая колонка: Состав команды (6 игроков) -->
-        <div class="lg:col-span-5 glass-card rounded-3xl p-6">
-          <div class="flex items-center justify-between mb-4">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start reveal-stage">
+        <!-- Левая панель: Ростер из 6 игроков -->
+        <div class="lg:col-span-5 studio-panel p-6">
+          <div class="flex items-center justify-between pb-4 mb-4 border-b border-zinc-800">
             <div>
-              <h2 class="font-display font-bold text-xl flex items-center gap-2">
-                <i data-lucide="users" class="w-5 h-5 text-indigo-400"></i>
-                Участники созвона (${this.state.players.length})
-              </h2>
-              <p class="text-xs text-slate-400 mt-0.5">Впишите имена коллег и выберите роль (Прогер 💻 / Менеджер 📊)</p>
+              <div class="font-mono-code text-[11px] text-[#facc15] uppercase tracking-wider">ROSTER // 6 PLAYERS</div>
+              <h2 class="font-display font-bold text-lg text-white mt-0.5">Состав участников</h2>
             </div>
-            <button id="btn-add-player" class="px-3 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/40 text-indigo-300 text-xs font-semibold flex items-center gap-1 transition">
-              <i data-lucide="user-plus" class="w-3.5 h-3.5"></i> Добавить
+            <button id="btn-add-player" class="btn-tactile px-3 py-1.5 bg-[#18181c] hover:bg-zinc-800 text-xs font-mono-code text-zinc-200 flex items-center gap-1.5">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i> СЛОТ
             </button>
           </div>
 
-          <div class="space-y-2.5 max-h-[430px] overflow-y-auto pr-1">
+          <div class="space-y-2">
             ${this.state.players
               .map(
                 (p, idx) => `
-              <div class="flex items-center gap-2 p-2.5 rounded-2xl bg-white/[0.04] border border-white/10">
-                <span class="w-6 text-center font-mono-code text-xs text-slate-400">${idx + 1}</span>
+              <div class="flex items-center gap-2.5 p-2.5 bg-[#18181c] border border-zinc-800">
+                <span class="w-6 text-center font-mono-code text-xs text-zinc-500 font-bold">0${idx + 1}</span>
                 <input
                   type="text"
                   data-player-name="${p.id}"
                   value="${this.escapeHtml(p.name)}"
-                  class="flex-1 bg-transparent border-b border-transparent focus:border-indigo-400 focus:outline-none text-sm font-semibold text-white px-1 py-0.5"
+                  class="flex-1 bg-transparent border-b border-transparent focus:border-[#facc15] focus:outline-none text-sm font-semibold text-white py-0.5"
                   placeholder="Имя игрока"
                 />
                 <button
                   data-toggle-role="${p.id}"
-                  class="px-2.5 py-1 rounded-lg text-xs font-medium transition border ${
+                  class="px-2.5 py-1 font-mono-code text-[11px] font-bold border transition ${
                     p.role === 'dev'
-                      ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-300'
-                      : 'bg-pink-500/20 border-pink-500/40 text-pink-300'
+                      ? 'bg-blue-950/70 border-blue-500/50 text-blue-300'
+                      : 'bg-rose-950/70 border-rose-500/50 text-rose-300'
                   }"
-                  title="Нажмите, чтобы переключить роль Прогер / Менеджер"
+                  title="Переключить роль DEV / MGR"
                 >
-                  ${p.role === 'dev' ? '💻 Прогер' : '📊 Менеджер'}
+                  ${p.role === 'dev' ? 'DEV' : 'MGR'}
                 </button>
                 ${
                   this.state.players.length > 2
-                    ? `<button data-remove-player="${p.id}" class="p-1 text-slate-500 hover:text-rose-400 transition" title="Удалить">
+                    ? `<button data-remove-player="${p.id}" class="p-1 text-zinc-600 hover:text-rose-400 transition">
                         <i data-lucide="x" class="w-4 h-4"></i>
                       </button>`
                     : ''
@@ -1192,17 +1667,17 @@ class PartySyncApp {
               .join('')}
           </div>
 
-          <div class="mt-5 pt-4 border-t border-white/10 flex items-center justify-between gap-2 text-xs text-slate-400">
-            <span>Длительность партии (ходов):</span>
+          <div class="mt-5 pt-4 border-t border-zinc-800 flex items-center justify-between text-xs font-mono-code text-zinc-400">
+            <span>ДИСТАНЦИЯ МАТЧА:</span>
             <div class="flex items-center gap-1.5">
               ${[18, 30, 50]
                 .map(
                   (num) => `
-                <button data-set-turns="${num}" class="px-3 py-1 rounded-lg font-mono-code font-semibold border transition ${
+                <button data-set-turns="${num}" class="px-3 py-1 font-bold border transition ${
                     this.state.totalTurnsTarget === num
-                      ? 'bg-indigo-500 text-white border-indigo-400'
-                      : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
-                  }">${num}</button>
+                      ? 'bg-[#facc15] text-black border-black'
+                      : 'bg-[#18181c] text-zinc-400 border-zinc-800 hover:border-zinc-600'
+                  }">${num} ХОДОВ</button>
               `
                 )
                 .join('')}
@@ -1210,52 +1685,50 @@ class PartySyncApp {
           </div>
         </div>
 
-        <!-- Правая колонка: Выбор режима и старт -->
-        <div class="lg:col-span-7 glass-card rounded-3xl p-6">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <h2 class="font-display font-bold text-xl flex items-center gap-2">
-                <i data-lucide="gamepad-2" class="w-5 h-5 text-pink-400"></i>
-                Выберите формат игры
-              </h2>
-              <p class="text-xs text-slate-400 mt-0.5">Режимы можно переключать даже прямо во время партии с сохранением очков!</p>
-            </div>
+        <!-- Правая панель: Режимы игры -->
+        <div class="lg:col-span-7 studio-panel p-6">
+          <div class="pb-4 mb-4 border-b border-zinc-800">
+            <div class="font-mono-code text-[11px] text-[#facc15] uppercase tracking-wider">SELECT FORMAT</div>
+            <h2 class="font-display font-bold text-lg text-white mt-0.5">Конфигурация стола</h2>
           </div>
 
-          <div class="space-y-3">
+          <div class="space-y-2.5">
             ${modes
-              .map(
-                (m) => `
-              <div
-                data-select-mode="${m.id}"
-                class="cursor-pointer p-4 rounded-2xl bg-gradient-to-r ${m.color} border transition hover:scale-[1.01] ${
-                  this.state.gameMode === m.id ? 'ring-2 ring-indigo-400 shadow-lg shadow-indigo-500/15' : 'opacity-85 hover:opacity-100'
-                }"
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <div class="font-display font-bold text-base text-white">${m.title}</div>
-                  <span class="text-[10px] font-mono-code font-bold uppercase px-2.5 py-0.5 rounded-full bg-white/10 text-indigo-200 border border-white/15">
-                    ${m.badge}
-                  </span>
+              .map((m) => {
+                const active = this.state.gameMode === m.id;
+                return `
+                <div
+                  data-select-mode="${m.id}"
+                  class="cursor-pointer p-4 border transition ${
+                    active
+                      ? 'bg-[#18181c] border-2 border-[#facc15] shadow-[4px_4px_0px_#facc15]'
+                      : 'bg-[#121215] border-zinc-800 hover:border-zinc-600'
+                  }"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-mono-code text-[11px] ${active ? 'text-[#facc15]' : 'text-zinc-500'} font-bold">${m.code}</span>
+                    <span class="font-mono-code text-[10px] px-2 py-0.5 border ${
+                      active ? 'bg-[#facc15] text-black border-black font-bold' : 'bg-zinc-900 text-zinc-400 border-zinc-800'
+                    }">${m.badge}</span>
+                  </div>
+                  <div class="font-display font-bold text-base text-white mt-1">${m.title}</div>
+                  <p class="text-xs text-zinc-400 mt-1 leading-relaxed">${m.desc}</p>
                 </div>
-                <p class="text-xs text-slate-300 mt-1.5 leading-relaxed">${m.desc}</p>
-              </div>
-            `
-              )
+              `;
+              })
               .join('')}
           </div>
 
           <div class="mt-6 flex flex-wrap items-center gap-3">
-            <button id="btn-start-game" class="flex-1 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 hover:from-indigo-400 hover:to-pink-400 text-white font-display font-bold text-base shadow-xl shadow-indigo-500/25 flex items-center justify-center gap-2 transition transform hover:-translate-y-0.5">
-              <i data-lucide="play" class="w-5 h-5 fill-current"></i>
-              ЗАПУСТИТЬ ВЕЧЕРНИЙ СИНК
+            <button id="btn-start-game" class="btn-tactile flex-1 py-3.5 px-6 bg-[#facc15] hover:bg-yellow-300 text-black font-display font-extrabold text-sm uppercase tracking-wider flex items-center justify-center gap-2">
+              НАЧАТЬ НОВУЮ ПАРТИЮ
+              <i data-lucide="arrow-right" class="w-4 h-4"></i>
             </button>
 
             ${
               this.state.turnNumber > 1
-                ? `<button id="btn-resume-game" class="py-3.5 px-5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-semibold text-sm flex items-center gap-2 transition">
-                    <i data-lucide="rotate-cw" class="w-4 h-4 text-emerald-400"></i>
-                    Продолжить (Ход ${this.state.turnNumber})
+                ? `<button id="btn-resume-game" class="btn-tactile py-3.5 px-5 bg-[#18181c] hover:bg-zinc-800 text-white font-mono-code font-bold text-xs flex items-center gap-2">
+                    ПРОДОЛЖИТЬ [ХОД ${this.state.turnNumber}/${this.state.totalTurnsTarget}]
                   </button>`
                 : ''
             }
@@ -1265,54 +1738,113 @@ class PartySyncApp {
     `;
   }
 
-  renderGameScreen() {
-    const activePlayer = this.getActivePlayer();
+  renderBoardTrack() {
+    const schedule = this.state.boardSchedule || [];
+    const currentTurn = this.state.turnNumber;
+    const startIdx = Math.max(0, currentTurn - 2);
+    const slice = schedule.slice(startIdx, startIdx + 7);
 
     return `
-      <div class="space-y-6 animate-pop">
-        <!-- Верхняя полоса игроков (6 карточек с очками, ролями и быстрым переключением) -->
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div class="studio-panel p-3 flex flex-wrap items-center justify-between gap-3">
+        <!-- Лента клеток 50 ходов -->
+        <div class="flex items-center gap-1.5 overflow-x-auto py-0.5">
+          ${slice
+            .map((cell) => {
+              const isCurrent = cell.turn === currentTurn;
+              const isPast = cell.turn < currentTurn;
+              const isSpecial = Boolean(cell.eventId || cell.act !== 'quiz');
+              return `
+                <div class="px-2.5 py-1 border font-mono-code text-[11px] flex items-center gap-1.5 shrink-0 ${
+                  isCurrent
+                    ? 'bg-[#facc15] text-black border-black font-extrabold'
+                    : isPast
+                    ? 'bg-zinc-950 text-zinc-600 border-zinc-900 line-through'
+                    : isSpecial
+                    ? 'bg-zinc-900 text-amber-300 border-amber-500/40'
+                    : 'bg-[#18181c] text-zinc-400 border-zinc-800'
+                }">
+                  <span>#${String(cell.turn).padStart(2, '0')}</span>
+                  <span>${cell.label}</span>
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+
+        <!-- Быстрое переключение режима хода и управление -->
+        <div class="flex items-center gap-1.5 ml-auto">
+          ${[
+            { id: 'quiz', label: 'ВОПРОС' },
+            { id: 'bluff', label: 'БЛЕФ' },
+            { id: 'wavelength', label: 'СПЕКТР' },
+            { id: 'case', label: 'ИИ-КЕЙС' }
+          ]
+            .map(
+              (tab) => `
+            <button
+              data-switch-act="${tab.id}"
+              class="px-2.5 py-1 font-mono-code text-[11px] font-bold border transition ${
+                this.state.currentAct === tab.id
+                  ? 'bg-white text-black border-white'
+                  : 'bg-[#18181c] text-zinc-400 border-zinc-800 hover:text-white'
+              }"
+            >${tab.label}</button>
+          `
+            )
+            .join('')}
+          <button id="btn-to-lobby" class="px-2.5 py-1 bg-[#18181c] border border-zinc-800 hover:border-zinc-600 font-mono-code text-[11px] text-zinc-400 hover:text-white">
+            ЛОББИ
+          </button>
+          <button id="btn-end-game" class="px-2.5 py-1 bg-zinc-900 border border-zinc-700 hover:border-[#facc15] font-mono-code text-[11px] text-[#facc15]">
+            ФИНАЛ
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  renderGameScreen() {
+    return `
+      <div class="space-y-5">
+        <!-- Табло 6 игроков -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
           ${this.state.players
             .map((p, idx) => {
               const isTurn = idx === this.state.activePlayerIndex;
               return `
                 <div
                   data-make-active="${idx}"
-                  class="cursor-pointer rounded-2xl p-3 transition relative ${
-                    isTurn ? 'glass-card active-player-glow' : 'glass-card-interactive opacity-85 hover:opacity-100'
+                  class="cursor-pointer p-3 transition relative ${
+                    isTurn ? 'player-slot-active' : 'studio-card hover:border-zinc-600'
                   }"
                   title="Кликните, чтобы передать ход этому игроку"
                 >
-                  ${
-                    isTurn
-                      ? `<div class="absolute -top-2.5 left-3 px-2 py-0.5 rounded-full bg-indigo-500 text-[10px] font-bold uppercase tracking-wider text-white shadow">
-                          Сейчас отвечает
-                        </div>`
-                      : ''
-                  }
-                  <div class="flex items-center justify-between gap-1 mt-0.5">
-                    <div class="font-bold text-sm truncate text-white flex items-center gap-1.5">
-                      <span>${p.role === 'dev' ? '💻' : '📊'}</span>
-                      <span class="truncate">${this.escapeHtml(p.name)}</span>
-                    </div>
-                    ${
-                      p.streak >= 2
-                        ? `<span class="text-[11px] font-mono-code text-amber-400" title="Серия верных ответов">🔥${p.streak}</span>`
-                        : ''
-                    }
+                  <div class="flex items-center justify-between gap-1">
+                    <span class="font-mono-code text-[10px] px-1.5 py-0.5 font-bold ${
+                      p.role === 'dev' ? 'bg-blue-950 text-blue-300 border border-blue-500/40' : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                    }">
+                      ${p.role === 'dev' ? 'DEV' : 'MGR'}
+                    </span>
+                    <span class="font-mono-code text-[10px] ${isTurn ? 'text-[#facc15] font-bold' : 'text-zinc-500'}">
+                      ${isTurn ? 'АКТИВНЫЙ ХОД' : `СЛОТ 0${idx + 1}`}
+                    </span>
                   </div>
-                  <div class="mt-2 flex items-baseline justify-between">
+
+                  <div class="font-bold text-sm text-white truncate mt-2">${this.escapeHtml(p.name)}</div>
+
+                  <div class="mt-2 pt-2 border-t border-zinc-800/80 flex items-baseline justify-between">
                     <div class="font-mono-code font-extrabold text-xl ${
-                      p.score >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      p.score > 0 ? 'text-emerald-400' : p.score < 0 ? 'text-rose-400' : 'text-zinc-200'
                     }">${p.score}</div>
                     <div class="flex items-center gap-1">
-                      <button data-score-minus="${p.id}" class="w-5 h-5 rounded bg-white/5 hover:bg-rose-500/30 text-slate-400 hover:text-white text-xs flex items-center justify-center" title="-50 очков">-</button>
-                      <button data-score-plus="${p.id}" class="w-5 h-5 rounded bg-white/5 hover:bg-emerald-500/30 text-slate-400 hover:text-white text-xs flex items-center justify-center" title="+50 очков">+</button>
+                      <button data-score-minus="${p.id}" class="w-5 h-5 bg-zinc-900 hover:bg-rose-950 border border-zinc-700 text-zinc-400 hover:text-white font-mono-code text-xs flex items-center justify-center" title="-50">-</button>
+                      <button data-score-plus="${p.id}" class="w-5 h-5 bg-zinc-900 hover:bg-emerald-950 border border-zinc-700 text-zinc-400 hover:text-white font-mono-code text-xs flex items-center justify-center" title="+50">+</button>
                     </div>
                   </div>
-                  <div class="mt-1.5 flex items-center gap-1 flex-wrap">
-                    <span class="text-[10px] text-slate-400">Джокеров: ${p.jokers.length}</span>
-                    ${p.peerId ? `<span class="ml-auto text-[10px] text-emerald-400">📱 онлайн</span>` : ''}
+
+                  <div class="mt-1.5 flex items-center justify-between font-mono-code text-[10px] text-zinc-500">
+                    <span>ДЖОКЕРЫ: ${p.jokers.length}/6</span>
+                    ${p.streak >= 2 ? `<span class="text-[#facc15]">СТРИК ×${p.streak}</span>` : ''}
                   </div>
                 </div>
               `;
@@ -1320,49 +1852,8 @@ class PartySyncApp {
             .join('')}
         </div>
 
-        <!-- Панель переключения раундов и прогресса хода -->
-        <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-white/[0.03] border border-white/10">
-          <div class="flex items-center gap-3">
-            <span class="font-mono-code text-xs px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 font-bold">
-              ХОД ${this.state.turnNumber} / ${this.state.totalTurnsTarget}
-            </span>
-            <span class="text-xs text-slate-300">
-              Отвечает: <strong class="text-white">${this.escapeHtml(activePlayer.name)}</strong>
-              (${activePlayer.role === 'dev' ? '💻 Прогер' : '📊 Менеджер'})
-            </span>
-          </div>
+        ${this.renderBoardTrack()}
 
-          <!-- Быстрое переключение раундов на лету -->
-          <div class="flex items-center gap-1.5 flex-wrap">
-            ${[
-              { id: 'quiz', label: '🎯 Квиз 2.0' },
-              { id: 'bluff', label: '🎭 Правдоруб' },
-              { id: 'wavelength', label: '📡 На волне' },
-              { id: 'case', label: '🤖 Кейс-Баттл' }
-            ]
-              .map(
-                (tab) => `
-              <button
-                data-switch-act="${tab.id}"
-                class="px-3 py-1 rounded-xl text-xs font-semibold transition border ${
-                  this.state.currentAct === tab.id
-                    ? 'bg-indigo-500 text-white border-indigo-400 shadow'
-                    : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
-                }"
-              >${tab.label}</button>
-            `
-              )
-              .join('')}
-            <button id="btn-to-lobby" class="ml-2 px-2.5 py-1 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-400 hover:text-white transition">
-              ⚙️ В лобби
-            </button>
-            <button id="btn-end-game" class="px-2.5 py-1 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-xs text-amber-300 transition">
-              🏆 Итоги
-            </button>
-          </div>
-        </div>
-
-        <!-- Контент активного раунда -->
         ${
           this.state.currentAct === 'quiz'
             ? this.renderQuizAct()
@@ -1376,154 +1867,217 @@ class PartySyncApp {
     `;
   }
 
+  // --- РЕНДЕР РЕЖИМА 1: КВИЗ 2.0 С ПОЛНОЙ ЛОГИКОЙ ---
   renderQuizAct() {
-    const q = this.state.quiz.currentQuestion;
+    const qState = this.state.quiz;
+    const q = qState.currentQuestion;
     if (!q) return '';
+
     const activePlayer = this.getActivePlayer();
     const cat = CATEGORIES[q.category] || CATEGORIES.weird_world;
-    const ev = this.state.quiz.currentEvent;
+    const ev = qState.currentEvent;
+
+    // Если активен Аукцион и торги ещё не закрыты — скрываем вопрос и варианты!
+    const hideForAuction = ev?.type === 'auction' && !qState.auctionResolved;
+    // Если активна Дуэль и ещё не выбран соперник — сначала просим выбрать соперника!
+    const waitForDuelOpponent = ev?.type === 'duel' && !qState.duelOpponentId;
+    // Если Общий Штурм — отвечают все 6 игроков в спец-блоке
+    const isAllPlay = ev?.type === 'all_play';
+    const isDuelActive = ev?.type === 'duel' && qState.duelOpponentId;
+
+    const effectivePoints =
+      ev?.type === 'auction' && qState.auctionResolved
+        ? qState.auctionHighestBid * qState.activeMultiplier
+        : Math.round(q.points * qState.activeMultiplier);
+
+    const timerPct = Math.max(0, (qState.timerSeconds / (qState.timerMax || 45)) * 100);
 
     return `
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        <!-- Основная карточка вопроса (8 колонок) -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start reveal-stage">
+        <!-- Левая колонка: Сцена вопроса и спец-ивента (8 колонок) -->
         <div class="lg:col-span-8 space-y-4">
-          ${
-            ev
-              ? `<div class="p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-pink-500/20 to-purple-500/20 border border-amber-400/50 animate-pop">
-                  <div class="flex items-center justify-between">
-                    <div class="font-display font-extrabold text-amber-300 text-base">${ev.title}</div>
-                    <span class="text-[11px] font-mono-code uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-200">Ивент хода</span>
-                  </div>
-                  <p class="text-xs text-slate-200 mt-1">${ev.desc}</p>
-                  ${this.renderEventInteractiveWidget(ev)}
-                </div>`
-              : ''
-          }
+          ${ev ? this.renderEventPanel(ev) : ''}
 
-          <div class="glass-card rounded-3xl p-6 sm:p-8 relative overflow-hidden">
-            <div class="flex flex-wrap items-center justify-between gap-2 mb-5">
-              <div class="flex items-center gap-2">
-                <span class="px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/20 border border-indigo-500/40 text-indigo-300">
+          <div class="studio-panel p-6 sm:p-8 relative">
+            <!-- Полоска таймера сверху карточки -->
+            <div class="w-full h-1.5 bg-zinc-900 mb-6 overflow-hidden">
+              <div id="quiz-timer-bar" class="h-full bg-[#facc15] transition-all duration-300" style="width: ${timerPct}%"></div>
+            </div>
+
+            <!-- Мета-шапка вопроса -->
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+              <div class="flex items-center gap-2.5">
+                <span class="w-8 h-8 bg-[#facc15] text-black font-mono-code font-extrabold text-xs flex items-center justify-center">
+                  ${String(this.state.turnNumber).padStart(2, '0')}
+                </span>
+                <span class="h-2 w-8 accent-bar-grow" style="background: ${cat.color}"></span>
+                <span class="font-mono-code text-xs font-bold uppercase tracking-wider text-zinc-300">
                   ${cat.name}
                 </span>
-                <span class="px-3 py-1 rounded-full text-xs font-mono-code font-bold bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
-                  +${q.points * this.state.quiz.activeMultiplier} очков
+                <span class="px-2.5 py-0.5 bg-zinc-900 border border-zinc-700 font-mono-code text-xs font-bold text-[#facc15]">
+                  +${effectivePoints} PTS
                 </span>
                 ${
-                  q.isAi
-                    ? `<span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-300">🤖 YandexGPT</span>`
+                  qState.usedDoubleThisTurn
+                    ? `<span class="px-2 py-0.5 bg-rose-950 border border-rose-500 text-rose-300 font-mono-code text-[11px] font-bold">ВА-БАНК ×2 (ШТРАФ -${Math.round(
+                        q.points / 2
+                      )})</span>`
                     : ''
                 }
               </div>
 
-              <!-- Таймер и кнопка случайного Ивента -->
+              <!-- Управление ивентом и таймером -->
               <div class="flex items-center gap-2">
-                <button id="btn-roll-event" class="px-3 py-1 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-1 transition" title="Запустить случайное игровое событие на этот вопрос">
-                  🎲 Ивент!
-                </button>
-                <button id="btn-quiz-timer" class="px-3 py-1 rounded-xl border text-xs font-mono-code font-bold flex items-center gap-1.5 transition ${
-                  this.state.quiz.timerRunning
-                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse'
-                    : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                <select id="select-manual-event" class="bg-[#18181c] border border-zinc-700 text-zinc-300 font-mono-code text-xs px-2.5 py-1.5 focus:outline-none focus:border-[#facc15]">
+                  <option value="">+ СПЕЦ-СОБЫТИЕ НА ХОД...</option>
+                  ${RANDOM_EVENTS.map(
+                    (e) => `<option value="${e.id}" ${ev?.id === e.id ? 'selected' : ''}>${e.title}</option>`
+                  ).join('')}
+                </select>
+
+                <button id="btn-quiz-timer" class="btn-tactile px-3 py-1.5 font-mono-code text-xs font-bold flex items-center gap-1.5 ${
+                  qState.timerRunning
+                    ? 'bg-rose-600 text-white border-rose-400'
+                    : 'bg-[#18181c] text-zinc-200'
                 }">
-                  <i data-lucide="timer" class="w-3.5 h-3.5"></i>
-                  <span id="quiz-timer-val">${this.state.quiz.timerSeconds}с</span>
+                  <i data-lucide="${qState.timerRunning ? 'pause' : 'play'}" class="w-3.5 h-3.5"></i>
+                  <span id="quiz-timer-val">${String(qState.timerSeconds).padStart(2, '0')}s</span>
                 </button>
               </div>
             </div>
 
-            <h3 class="font-display font-bold text-xl sm:text-2xl text-white leading-snug mb-6">
-              ${this.escapeHtml(q.question)}
-            </h3>
-
             ${
-              this.state.quiz.aiHintText
-                ? `<div class="mb-5 p-3.5 rounded-2xl bg-fuchsia-500/15 border border-fuchsia-500/30 text-xs text-fuchsia-200 flex items-start gap-2.5 animate-pop">
-                    <i data-lucide="sparkles" class="w-4 h-4 text-fuchsia-400 shrink-0 mt-0.5"></i>
-                    <div><strong>Подсказка Оракула:</strong> ${this.escapeHtml(this.state.quiz.aiHintText)}</div>
+              hideForAuction
+                ? `<div class="p-8 border-2 border-dashed border-zinc-700 bg-zinc-950/60 text-center space-y-2 my-4">
+                    <div class="font-mono-code text-xs text-[#facc15] uppercase">ВОПРОС ЗАСЕКРЕЧЕН ДО ОКОНЧАНИЯ ТОРГОВ</div>
+                    <div class="font-display font-bold text-lg text-white">Категория лота: ${cat.name}</div>
+                    <p class="text-xs text-zinc-400">Сделайте ставки в блоке аукциона выше и нажмите «ОТКРЫТЬ ВОПРОС ПОБЕДИТЕЛЮ».</p>
                   </div>`
-                : ''
-            }
-
-            ${
-              this.state.quiz.allyPlayerId
-                ? `<div class="mb-5 p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-xs text-emerald-200 flex items-center gap-2">
-                    🤝 <strong>Консилиум активен:</strong> ${this.escapeHtml(
-                      this.state.players.find((p) => p.id === this.state.quiz.allyPlayerId)?.name || 'Коллега'
-                    )} помогает советом (+150 очков при успехе)!
+                : waitForDuelOpponent
+                ? `<div class="p-8 border-2 border-dashed border-zinc-700 bg-zinc-950/60 text-center space-y-2 my-4">
+                    <div class="font-mono-code text-xs text-[#facc15] uppercase">ОЖИДАНИЕ ВЫБОРА СОПЕРНИКА ДЛЯ ДУЭЛИ</div>
+                    <p class="text-xs text-zinc-400">Выберите оппонента в панели дуэли выше, чтобы открыть вопрос.</p>
                   </div>`
-                : ''
-            }
+                : `
+                  <!-- Текст вопроса -->
+                  <h3 class="font-display font-bold text-xl sm:text-2xl text-white leading-snug mb-6">
+                    ${this.escapeHtml(q.question)}
+                  </h3>
 
-            <!-- Варианты ответов A, B, C, D -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              ${q.options
-                .map((opt, idx) => {
-                  const letters = ['A', 'B', 'C', 'D'];
-                  const isHidden = this.state.quiz.hiddenOptions.includes(idx);
-                  const isRevealed = this.state.quiz.revealed;
-                  const isCorrect = idx === q.answer;
-                  const isSelected = idx === this.state.quiz.selectedOption;
-
-                  let cardStyle = 'glass-card-interactive text-white';
-                  if (isHidden) {
-                    cardStyle = 'opacity-20 pointer-events-none bg-white/[0.02] border border-white/5';
-                  } else if (isRevealed) {
-                    if (isCorrect) {
-                      cardStyle = 'bg-emerald-500/25 border-2 border-emerald-400 text-white shadow-lg shadow-emerald-500/20';
-                    } else if (isSelected && !isCorrect) {
-                      cardStyle = 'bg-rose-500/25 border-2 border-rose-400 text-rose-100';
-                    } else {
-                      cardStyle = 'opacity-50 bg-white/[0.03] border border-white/10';
-                    }
+                  ${
+                    qState.aiHintText
+                      ? `<div class="mb-5 p-4 bg-zinc-900 border-l-4 border-[#facc15] text-xs text-zinc-200 font-mono-code">
+                          <strong class="text-[#facc15]">НАВОДКА ОРАКУЛА:</strong> ${this.escapeHtml(qState.aiHintText)}
+                        </div>`
+                      : ''
                   }
 
-                  // Голоса зала для джокера «Голос Discord»
-                  const votersForOpt = Object.entries(this.state.quiz.crowdVotes)
-                    .filter(([, vIdx]) => vIdx === idx)
-                    .map(([pid]) => this.state.players.find((p) => p.id === pid)?.name)
-                    .filter(Boolean);
+                  ${
+                    qState.allyPlayerId
+                      ? `<div class="mb-5 p-3 bg-emerald-950/50 border border-emerald-500/50 text-xs font-mono-code text-emerald-300">
+                          КОНСИЛИУМ АКТИВЕН: Союзник <strong>${this.escapeHtml(
+                            this.state.players.find((p) => p.id === qState.allyPlayerId)?.name || ''
+                          )}</strong> помогает советом (+150 очков при успехе).
+                        </div>`
+                      : ''
+                  }
 
-                  return `
-                    <button
-                      data-quiz-option="${idx}"
-                      ${isHidden || isRevealed ? 'disabled' : ''}
-                      class="p-4 rounded-2xl text-left flex items-start gap-3.5 transition ${cardStyle}"
-                    >
-                      <span class="w-8 h-8 rounded-xl bg-white/10 border border-white/15 font-mono-code font-bold text-sm flex items-center justify-center shrink-0">
-                        ${letters[idx]}
-                      </span>
-                      <div class="flex-1">
-                        <div class="font-medium text-sm sm:text-base leading-snug">${this.escapeHtml(opt)}</div>
-                        ${
-                          this.state.quiz.showCrowdVotes && votersForOpt.length > 0
-                            ? `<div class="mt-1.5 text-[11px] text-cyan-300">📢 За этот вариант: ${votersForOpt.join(', ')}</div>`
-                            : ''
+                  <!-- Панель опроса Discord (если нажат джокер Опрос Discord) -->
+                  ${qState.showCrowdPollPanel && !qState.revealed ? this.renderCrowdPollInteractive() : ''}
+
+                  <!-- Панель выбора для ОБЩЕГО ШТУРМА (отвечают все 6) или ДУЭЛИ 1v1 -->
+                  ${isAllPlay && !qState.revealed ? this.renderAllPlayInteractive() : ''}
+                  ${isDuelActive && !qState.revealed ? this.renderDuelInteractive() : ''}
+
+                  <!-- Карточки вариантов A, B, C, D -->
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    ${q.options
+                      .map((opt, idx) => {
+                        const letters = ['A', 'B', 'C', 'D'];
+                        const isHidden = qState.hiddenOptions.includes(idx);
+                        const isRevealed = qState.revealed;
+                        const isCorrect = idx === q.answer;
+                        const isSelected = idx === qState.selectedOption;
+
+                        let styleClass = 'studio-card-interactive text-zinc-100';
+                        if (isHidden) {
+                          styleClass = 'opacity-15 pointer-events-none bg-zinc-950 border border-zinc-900';
+                        } else if (isRevealed) {
+                          if (isCorrect) {
+                            styleClass = 'bg-emerald-950/90 border-2 border-emerald-400 text-white shadow-[4px_4px_0px_#10b981]';
+                          } else if (isSelected && !isCorrect) {
+                            styleClass = 'bg-rose-950/90 border-2 border-rose-500 text-rose-100';
+                          } else {
+                            styleClass = 'opacity-45 bg-zinc-950 border border-zinc-800';
+                          }
                         }
-                      </div>
-                    </button>
-                  `;
-                })
-                .join('')}
-            </div>
 
-            <!-- Блок объяснения после ответа -->
+                        // Голоса из опроса зала
+                        const pollVoters = Object.entries(qState.crowdVotes)
+                          .filter(([, vIdx]) => vIdx === idx)
+                          .map(([pid]) => this.state.players.find((p) => p.id === pid)?.name)
+                          .filter(Boolean);
+
+                        // Для дуэли или общего штурма блокируем прямой клик по карточке до вскрытия, чтобы не спалить ответ
+                        const disableDirectClick = isHidden || isRevealed || isAllPlay || isDuelActive;
+
+                        return `
+                          <button
+                            data-quiz-option="${idx}"
+                            ${disableDirectClick ? 'disabled' : ''}
+                            class="p-4 text-left flex items-start gap-3.5 ${styleClass}"
+                          >
+                            <span class="w-8 h-8 bg-zinc-900 border border-zinc-700 font-mono-code font-extrabold text-xs flex items-center justify-center shrink-0 ${
+                              isRevealed && isCorrect ? 'bg-emerald-400 text-black border-black' : 'text-[#facc15]'
+                            }">
+                              ${letters[idx]}
+                            </span>
+                            <div class="flex-1">
+                              <div class="font-medium text-sm sm:text-base leading-snug">${this.escapeHtml(opt)}</div>
+                              ${
+                                pollVoters.length > 0
+                                  ? `<div class="mt-2 font-mono-code text-[11px] text-blue-400">ГОЛОС ЗАЛА: ${pollVoters.join(', ')}</div>`
+                                  : ''
+                              }
+                            </div>
+                          </button>
+                        `;
+                      })
+                      .join('')}
+                  </div>
+                `
+            }
+
+            <!-- Разбор ответа и переход хода -->
             ${
-              this.state.quiz.revealed
-                ? `<div class="mt-6 p-4 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 animate-pop">
-                    <div class="flex items-start justify-between gap-4">
-                      <div>
-                        <div class="text-xs font-bold uppercase tracking-wider text-indigo-300 mb-1">
+              qState.revealed
+                ? `<div class="mt-6 p-5 bg-zinc-900 border-2 ${
+                    qState.selectedOption === q.answer ? 'border-emerald-500' : 'border-rose-500'
+                  } reveal-stage">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div class="space-y-1">
+                        <div class="font-mono-code text-xs font-extrabold uppercase ${
+                          qState.timedOut
+                            ? 'text-rose-400'
+                            : qState.selectedOption === q.answer
+                            ? 'text-emerald-400'
+                            : 'text-rose-400'
+                        }">
                           ${
-                            this.state.quiz.selectedOption === q.answer
-                              ? '🎉 Верный ответ!'
-                              : '💡 Интересный факт:'
+                            qState.timedOut
+                              ? 'ВРЕМЯ ИСТЕКЛО (ПРОМАХ)'
+                              : qState.duelResultText
+                              ? qState.duelResultText
+                              : qState.selectedOption === q.answer
+                              ? 'ТОЧНОЕ ПОПАДАНИЕ'
+                              : 'ОШИБКА'
                           }
                         </div>
-                        <p class="text-sm text-slate-200 leading-relaxed">${this.escapeHtml(q.explanation)}</p>
+                        <p class="text-sm text-zinc-200 leading-relaxed">${this.escapeHtml(q.explanation)}</p>
                       </div>
-                      <button id="btn-next-turn" class="px-5 py-3 rounded-xl bg-gradient-to-r from-indigo-500 to-pink-500 hover:from-indigo-400 hover:to-pink-400 text-white font-display font-bold text-sm shrink-0 flex items-center gap-2 shadow-lg shadow-indigo-500/25 transition">
-                        Следующий ход <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                      <button id="btn-next-turn" class="btn-tactile px-6 py-3.5 bg-[#facc15] hover:bg-yellow-300 text-black font-display font-extrabold text-xs uppercase shrink-0 flex items-center gap-2">
+                        СЛЕДУЮЩИЙ ХОД
+                        <i data-lucide="arrow-right" class="w-4 h-4"></i>
                       </button>
                     </div>
                   </div>`
@@ -1532,166 +2086,496 @@ class PartySyncApp {
           </div>
         </div>
 
-        <!-- Правая колонка: Арсенал Джокеров и Ставки остальных 5 игроков (4 колонки) -->
+        <!-- Правая колонка: Тактические Джокеры + Prediction Market Card (4 колонки) -->
         <div class="lg:col-span-4 space-y-4">
-          <!-- Арсенал Джокеров активного игрока -->
-          <div class="glass-card rounded-3xl p-5">
-            <div class="flex items-center justify-between mb-3">
-              <h4 class="font-display font-bold text-sm uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                <i data-lucide="wand-2" class="w-4 h-4 text-indigo-400"></i>
-                Джокеры игрока ${this.escapeHtml(activePlayer.name)}
-              </h4>
-              <span class="text-xs text-slate-400">${activePlayer.jokers.length} / 6</span>
-            </div>
-
-            <div class="grid grid-cols-2 gap-2.5">
-              ${JOKERS.map((jk) => {
-                const available = activePlayer.jokers.includes(jk.id);
-                return `
-                  <button
-                    data-use-joker="${jk.id}"
-                    ${!available || this.state.quiz.revealed ? 'disabled' : ''}
-                    class="p-2.5 rounded-xl border text-left transition ${
-                      available && !this.state.quiz.revealed
-                        ? `bg-gradient-to-br ${jk.color} bg-opacity-20 border-white/20 hover:scale-[1.02] text-white shadow`
-                        : 'bg-white/[0.02] border-white/5 text-slate-600 opacity-35 cursor-not-allowed'
-                    }"
-                    title="${jk.desc}"
-                  >
-                    <div class="font-bold text-xs flex items-center justify-between">
-                      <span>${jk.name}</span>
-                      <i data-lucide="sparkles" class="w-3.5 h-3.5 opacity-80"></i>
-                    </div>
-                    <div class="text-[10px] text-white/80 mt-1 line-clamp-2 leading-tight">${jk.desc}</div>
-                  </button>
-                `;
-              }).join('')}
-            </div>
-          </div>
-
-          <!-- Ставки остальных 5 игроков (чтобы никто не скучал на чужом ходе!) -->
-          <div class="glass-card rounded-3xl p-5">
-            <div class="mb-3">
-              <h4 class="font-display font-bold text-sm uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                <i data-lucide="flame" class="w-4 h-4 text-amber-400"></i>
-                Ставки зала на этот ход
-              </h4>
-              <p class="text-[11px] text-slate-400 mt-0.5">
-                Пока ${this.escapeHtml(activePlayer.name)} думает, остальные ставят: угадал исход +100, ошибся -50!
-              </p>
-            </div>
-
-            <div class="space-y-2">
-              ${this.state.players
-                .filter((p) => p.id !== activePlayer.id)
-                .map((p) => {
-                  const currentBet = this.state.quiz.sideBets[p.id];
-                  return `
-                    <div class="flex items-center justify-between gap-2 p-2 rounded-xl bg-white/[0.03] border border-white/5">
-                      <span class="text-xs font-medium text-slate-200 truncate">
-                        ${p.role === 'dev' ? '💻' : '📊'} ${this.escapeHtml(p.name)}
-                      </span>
-                      <div class="flex items-center gap-1.5">
-                        <button
-                          data-side-bet="${p.id}:pass"
-                          ${this.state.quiz.revealed ? 'disabled' : ''}
-                          class="px-2.5 py-1 rounded-lg text-[11px] font-semibold transition border ${
-                            currentBet === 'pass'
-                              ? 'bg-emerald-500 text-white border-emerald-400'
-                              : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
-                          }"
-                        >👍 Ответит</button>
-                        <button
-                          data-side-bet="${p.id}:fail"
-                          ${this.state.quiz.revealed ? 'disabled' : ''}
-                          class="px-2.5 py-1 rounded-lg text-[11px] font-semibold transition border ${
-                            currentBet === 'fail'
-                              ? 'bg-rose-500 text-white border-rose-400'
-                              : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
-                          }"
-                        >💀 Засыпется</button>
-                      </div>
-                    </div>
-                  `;
-                })
-                .join('')}
-            </div>
-          </div>
+          ${this.renderJokerDeck(activePlayer)}
+          ${this.renderPredictionMarketCard(activePlayer)}
         </div>
       </div>
     `;
   }
 
-  renderEventInteractiveWidget(ev) {
-    if (ev.type === 'box') {
-      if (this.state.quiz.boxResolved) {
-        return `<div class="mt-3 p-2.5 rounded-xl bg-black/30 text-xs font-bold text-emerald-300">${this.state.quiz.boxResultText}</div>`;
-      }
-      return `
-        <div class="mt-3 flex flex-wrap items-center gap-2">
-          <button id="btn-box-safe" class="px-3.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-bold transition">
-            🛡️ Забрать гарантированные +150 очков
-          </button>
-          <button id="btn-box-risk" class="px-3.5 py-1.5 rounded-xl bg-amber-500/25 hover:bg-amber-500/35 border border-amber-400/50 text-amber-200 text-xs font-bold transition">
-            🎁 Открыть Чёрный Ящик!
-          </button>
-        </div>
-      `;
-    }
-
-    if (ev.type === 'dilemma') {
-      const activePlayer = this.getActivePlayer();
-      const partner = this.state.players.find((p) => p.id === this.state.quiz.dilemmaPartnerId);
-      if (!partner) return '';
-      if (this.state.quiz.dilemmaResolved) {
-        return `<div class="mt-3 p-2.5 rounded-xl bg-black/30 text-xs font-bold text-amber-200">${this.state.quiz.dilemmaResultText}</div>`;
-      }
-      const c1 = this.state.quiz.dilemmaChoices[activePlayer.id];
-      const c2 = this.state.quiz.dilemmaChoices[partner.id];
-
-      return `
-        <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3 rounded-xl bg-black/25 border border-white/10">
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-xs font-bold text-white">${this.escapeHtml(activePlayer.name)}:</span>
-            ${
-              c1
-                ? `<span class="text-xs text-emerald-400 font-mono-code">Выбор сделан ✓</span>`
-                : `<div class="flex gap-1.5">
-                    <button data-dilemma="${activePlayer.id}:coop" class="px-2.5 py-1 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 text-xs font-semibold">🤝 Мир</button>
-                    <button data-dilemma="${activePlayer.id}:betray" class="px-2.5 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs font-semibold">🗡️ Крысить</button>
-                  </div>`
-            }
-          </div>
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-xs font-bold text-white">${this.escapeHtml(partner.name)}:</span>
-            ${
-              c2
-                ? `<span class="text-xs text-emerald-400 font-mono-code">Выбор сделан ✓</span>`
-                : `<div class="flex gap-1.5">
-                    <button data-dilemma="${partner.id}:coop" class="px-2.5 py-1 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 text-xs font-semibold">🤝 Мир</button>
-                    <button data-dilemma="${partner.id}:betray" class="px-2.5 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs font-semibold">🗡️ Крысить</button>
-                  </div>`
-            }
-          </div>
-        </div>
-      `;
-    }
-
-    return '';
-  }
-
-  renderBluffAct() {
-    const item = this.state.bluff.currentItem;
-    if (!item) return '';
-    const phase = this.state.bluff.phase;
+  renderJokerDeck(activePlayer) {
+    const qState = this.state.quiz;
+    const targetMode = qState.pendingJokerTargetMode;
+    const otherPlayers = this.state.players.filter((p) => p.id !== activePlayer.id);
 
     return `
-      <div class="glass-card rounded-3xl p-6 sm:p-8 max-w-4xl mx-auto space-y-6">
-        <div class="flex items-center justify-between gap-2">
-          <span class="px-3 py-1 rounded-full text-xs font-semibold bg-pink-500/20 border border-pink-500/40 text-pink-300">
-            🎭 Правдоруб • ${item.category}
+      <div class="studio-panel p-5">
+        <div class="flex items-center justify-between pb-3 mb-3 border-b border-zinc-800">
+          <div>
+            <div class="font-mono-code text-[10px] text-zinc-500 uppercase">TACTICAL DECK</div>
+            <h4 class="font-display font-bold text-sm text-white">Джокеры: ${this.escapeHtml(activePlayer.name)}</h4>
+          </div>
+          <span class="font-mono-code text-xs font-bold text-[#facc15]">${activePlayer.jokers.length}/6</span>
+        </div>
+
+        ${
+          targetMode
+            ? `<div class="mb-3 p-3 bg-zinc-900 border border-[#facc15] space-y-2 reveal-stage">
+                <div class="font-mono-code text-xs text-[#facc15] font-bold">
+                  ${
+                    targetMode === 'ally'
+                      ? 'ВЫБЕРИТЕ СОЮЗНИКА ДЛЯ КОНСИЛИУМА (+150 ЕМУ ПРИ УСПЕХЕ):'
+                      : 'ВЫБЕРИТЕ КОМУ ПЕРЕДАТЬ ЭТОТ ВОПРОС:'
+                  }
+                </div>
+                <div class="grid grid-cols-1 gap-1.5">
+                  ${otherPlayers
+                    .map(
+                      (op) => `
+                    <button data-confirm-joker-target="${op.id}" class="p-2 bg-[#18181c] hover:bg-zinc-800 border border-zinc-700 text-left font-mono-code text-xs text-white flex items-center justify-between">
+                      <span>${this.escapeHtml(op.name)} (${op.role.toUpperCase()})</span>
+                      <span class="text-zinc-400">${op.score} PTS</span>
+                    </button>
+                  `
+                    )
+                    .join('')}
+                </div>
+                <button id="btn-cancel-joker-target" class="w-full py-1 text-[11px] font-mono-code text-zinc-400 hover:text-white">ОТМЕНА</button>
+              </div>`
+            : ''
+        }
+
+        <div class="grid grid-cols-2 gap-2">
+          ${JOKERS.map((jk) => {
+            const hasJoker = activePlayer.jokers.includes(jk.id);
+            const disabledByHint = jk.id === 'double' && qState.usedAnyHintThisTurn;
+            const isDisabled = !hasJoker || qState.revealed || disabledByHint;
+
+            return `
+              <button
+                data-use-joker="${jk.id}"
+                ${isDisabled ? 'disabled' : ''}
+                class="p-3 text-left border transition ${
+                  !isDisabled
+                    ? 'bg-[#18181c] border-zinc-700 hover:border-[#facc15] text-white'
+                    : 'bg-zinc-950 border-zinc-900 text-zinc-600 opacity-40 cursor-not-allowed'
+                }"
+              >
+                <div class="flex items-center justify-between font-mono-code text-xs font-extrabold">
+                  <span class="${!isDisabled ? 'text-[#facc15]' : 'text-zinc-600'}">[${jk.code}]</span>
+                  <i data-lucide="${jk.icon}" class="w-3.5 h-3.5"></i>
+                </div>
+                <div class="font-bold text-xs mt-1">${jk.name}</div>
+                <div class="text-[10px] text-zinc-400 mt-0.5 leading-tight">${jk.desc}</div>
+              </button>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // Адаптированный компонент Prediction Market Card из 21st.dev (isaiahbjork/prediction-market-card)
+  renderPredictionMarketCard(activePlayer) {
+    const qState = this.state.quiz;
+    const otherPlayers = this.state.players.filter((p) => p.id !== activePlayer.id);
+
+    const yesVoters = otherPlayers.filter((p) => qState.sideBets[p.id] === 'pass');
+    const noVoters = otherPlayers.filter((p) => qState.sideBets[p.id] === 'fail');
+    const totalBets = yesVoters.length + noVoters.length;
+    const yesPct = totalBets === 0 ? 50 : Math.round((yesVoters.length / totalBets) * 100);
+    const noPct = 100 - yesPct;
+    const totalPool = totalBets * 100;
+
+    return `
+      <div class="studio-panel p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 bg-amber-500 text-black font-mono-code font-extrabold text-[10px] uppercase">
+              LIVE BET POOL
+            </span>
+            <span class="font-mono-code text-[11px] text-zinc-400">
+              ${qState.betsLocked || qState.revealed ? 'СТАВКИ ЗАКРЫТЫ' : 'ПРИЁМ СТАВОК ОТКРЫТ'}
+            </span>
+          </div>
+          <span class="font-mono-code text-xs font-bold text-[#facc15]">BANK: ${totalPool} PTS</span>
+        </div>
+
+        <!-- Процентная шкала со скошенным разделителем из 21st.dev Prediction Market Card -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between font-mono-code">
+            <div>
+              <div class="text-[10px] text-zinc-400 uppercase">ВЕРЮ (ОТВЕТИТ)</div>
+              <div class="text-lg font-extrabold text-emerald-400">${yesPct}%</div>
+            </div>
+            <div class="text-right">
+              <div class="text-[10px] text-zinc-400 uppercase">СОМНЕВАЮСЬ (ОШИБЁТСЯ)</div>
+              <div class="text-lg font-extrabold text-rose-400">${noPct}%</div>
+            </div>
+          </div>
+
+          <div class="relative h-3 bg-rose-600 overflow-hidden border border-black">
+            <div
+              class="absolute top-0 left-0 h-full bg-emerald-500 transition-all duration-300"
+              style="width: ${yesPct}%"
+            ></div>
+            <div
+              class="absolute top-0 h-[150%] -top-[25%] w-2 bg-[#121215]"
+              style="left: ${yesPct}%; transform: translateX(-50%) skewX(-18deg)"
+            ></div>
+          </div>
+
+          <div class="flex justify-between font-mono-code text-[10px] text-zinc-500">
+            <span>УСПЕХ: +100 / ПРОМАХ: -50</span>
+            <span>${totalBets} ИЗ ${otherPlayers.length} ПОСТАВИЛИ</span>
+          </div>
+        </div>
+
+        <!-- Кнопки ставок для каждого из 5 зрителей -->
+        <div class="space-y-1.5 pt-2 border-t border-zinc-800">
+          ${otherPlayers
+            .map((p) => {
+              const bet = qState.sideBets[p.id];
+              const locked = qState.revealed || qState.betsLocked;
+              return `
+                <div class="flex items-center justify-between gap-2 p-2 bg-[#18181c] border border-zinc-800">
+                  <span class="text-xs font-semibold text-zinc-200 truncate">${this.escapeHtml(p.name)}</span>
+                  <div class="flex items-center gap-1">
+                    <button
+                      data-side-bet="${p.id}:pass"
+                      ${locked ? 'disabled' : ''}
+                      class="px-2.5 py-1 font-mono-code text-[10px] font-bold border transition ${
+                        bet === 'pass'
+                          ? 'bg-emerald-500 text-black border-black'
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-700 hover:text-white'
+                      } ${locked ? 'opacity-50 cursor-not-allowed' : ''}"
+                    >ВЕРЮ ↗</button>
+                    <button
+                      data-side-bet="${p.id}:fail"
+                      ${locked ? 'disabled' : ''}
+                      class="px-2.5 py-1 font-mono-code text-[10px] font-bold border transition ${
+                        bet === 'fail'
+                          ? 'bg-rose-500 text-white border-black'
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-700 hover:text-white'
+                      } ${locked ? 'opacity-50 cursor-not-allowed' : ''}"
+                    >ФОЛ ↘</button>
+                  </div>
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  renderCrowdPollInteractive() {
+    const qState = this.state.quiz;
+    const activePlayer = this.getActivePlayer();
+    const otherPlayers = this.state.players.filter((p) => p.id !== activePlayer.id);
+    const letters = ['A', 'B', 'C', 'D'];
+
+    return `
+      <div class="mb-5 p-4 bg-zinc-900 border border-blue-500/60 space-y-3 reveal-stage">
+        <div class="flex items-center justify-between">
+          <span class="font-mono-code text-xs font-bold text-blue-400 uppercase">ОПРОС DISCORD: МНЕНИЕ ЗАЛА</span>
+          <span class="font-mono-code text-[11px] text-zinc-400">Отметьте версии коллег</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          ${otherPlayers
+            .map((p) => {
+              const voted = qState.crowdVotes[p.id];
+              return `
+                <div class="flex items-center justify-between p-2 bg-[#121215] border border-zinc-800">
+                  <span class="text-xs font-medium text-zinc-200 truncate">${this.escapeHtml(p.name)}</span>
+                  <div class="flex gap-1">
+                    ${letters
+                      .map(
+                        (ltr, idx) => `
+                      <button
+                        data-crowd-poll="${p.id}:${idx}"
+                        class="w-6 h-6 font-mono-code text-xs font-bold border ${
+                          voted === idx
+                            ? 'bg-blue-500 text-white border-blue-300'
+                            : 'bg-zinc-900 text-zinc-400 border-zinc-700 hover:text-white'
+                        }"
+                      >${ltr}</button>
+                    `
+                      )
+                      .join('')}
+                  </div>
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  renderAllPlayInteractive() {
+    const qState = this.state.quiz;
+    const letters = ['A', 'B', 'C', 'D'];
+    const answeredCount = Object.keys(qState.allPlayAnswers).length;
+
+    return `
+      <div class="mb-6 p-4 bg-zinc-900 border-2 border-[#facc15] space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="font-mono-code text-xs font-extrabold text-[#facc15] uppercase">
+            ОБЩИЙ ШТУРМ: ОТВЕЧАЮТ ВСЕ 6 ИГРОКОВ (ВЫБОРЫ СКРЫТЫ ДО ВСКРЫТИЯ)
           </span>
-          <span class="text-xs text-slate-400">Угадай правду (+400) • Обмани коллегу (+300 за каждого!)</span>
+          <span class="font-mono-code text-xs text-zinc-300">${answeredCount} / ${this.state.players.length} ГОТОВЫ</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          ${this.state.players
+            .map((p) => {
+              const hasAnswered = typeof qState.allPlayAnswers[p.id] === 'number';
+              return `
+                <div class="flex items-center justify-between p-2.5 bg-[#121215] border border-zinc-800">
+                  <span class="text-xs font-bold text-white truncate">${this.escapeHtml(p.name)}</span>
+                  ${
+                    hasAnswered
+                      ? `<div class="flex items-center gap-2">
+                          <span class="font-mono-code text-[11px] text-emerald-400">ОТВЕТ ЗАФИКСИРОВАН [СКРЫТО]</span>
+                          <button data-allplay-reset="${p.id}" class="text-[10px] font-mono-code text-zinc-500 hover:text-white underline">Сброс</button>
+                        </div>`
+                      : `<div class="flex gap-1">
+                          ${letters
+                            .map(
+                              (ltr, idx) => `
+                            <button
+                              data-allplay-pick="${p.id}:${idx}"
+                              class="w-7 h-7 font-mono-code text-xs font-bold bg-zinc-900 hover:bg-[#facc15] hover:text-black border border-zinc-700 text-zinc-300"
+                            >${ltr}</button>
+                          `
+                            )
+                            .join('')}
+                        </div>`
+                  }
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+        <button id="btn-allplay-reveal" class="btn-tactile w-full py-2.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase">
+          ВСКРЫТЬ ОТВЕТЫ ВСЕХ УЧАСТНИКОВ (+250 КАЖДОМУ УГАДАВШЕМУ)
+        </button>
+      </div>
+    `;
+  }
+
+  renderDuelInteractive() {
+    const qState = this.state.quiz;
+    const p1 = this.getActivePlayer();
+    const p2 = this.state.players.find((p) => p.id === qState.duelOpponentId);
+    if (!p2) return '';
+    const letters = ['A', 'B', 'C', 'D'];
+
+    return `
+      <div class="mb-6 p-4 bg-zinc-900 border-2 border-rose-500 space-y-3">
+        <div class="font-mono-code text-xs font-extrabold text-rose-400 uppercase">
+          ДУЭЛЬ 1 НА 1: ${this.escapeHtml(p1.name)} VS ${this.escapeHtml(p2.name)} (ВЫБОРЫ СКРЫТЫ ДО ОТВЕТА ОБОИХ)
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ${[p1, p2]
+            .map((duelist) => {
+              const locked = typeof qState.duelAnswers[duelist.id] === 'number';
+              return `
+                <div class="p-3 bg-[#121215] border border-zinc-800 flex items-center justify-between">
+                  <span class="text-xs font-bold text-white">${this.escapeHtml(duelist.name)}</span>
+                  ${
+                    locked
+                      ? `<span class="font-mono-code text-xs text-emerald-400 font-bold">ОТВЕТ ПРИНЯТ [СКРЫТО]</span>`
+                      : `<div class="flex gap-1.5">
+                          ${letters
+                            .map(
+                              (ltr, idx) => `
+                            <button
+                              data-duel-pick="${duelist.id}:${idx}"
+                              class="w-7 h-7 font-mono-code text-xs font-bold bg-zinc-900 hover:bg-rose-500 hover:text-white border border-zinc-700 text-zinc-200"
+                            >${ltr}</button>
+                          `
+                            )
+                            .join('')}
+                        </div>`
+                  }
+                </div>
+              `;
+            })
+            .join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  renderEventPanel(ev) {
+    const qState = this.state.quiz;
+    const activePlayer = this.getActivePlayer();
+    const otherPlayers = this.state.players.filter((p) => p.id !== activePlayer.id);
+
+    return `
+      <div class="studio-panel p-5 border-l-4 border-l-[#facc15] space-y-3 reveal-stage">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 bg-[#facc15] text-black font-mono-code font-extrabold text-[10px]">
+              ${ev.code}
+            </span>
+            <h4 class="font-display font-bold text-base text-white">${ev.title}</h4>
+          </div>
+        </div>
+        <p class="text-xs text-zinc-300 leading-relaxed">${ev.desc}</p>
+
+        ${
+          ev.type === 'box'
+            ? qState.vaultResolved
+              ? `<div class="p-3 bg-zinc-900 border border-zinc-700 space-y-2">
+                  <div class="font-mono-code text-xs font-bold text-[#facc15]">${this.escapeHtml(qState.vaultResultText)}</div>
+                  <div class="grid grid-cols-3 gap-2 text-[11px] font-mono-code">
+                    ${qState.vaultBoxes
+                      .map(
+                        (b, i) => `
+                      <div class="p-2 border ${
+                        qState.vaultPickedIndex === i
+                          ? 'bg-zinc-800 border-[#facc15] text-white'
+                          : 'bg-zinc-950 border-zinc-800 text-zinc-500'
+                      }">
+                        СЕЙФ ${b.label}: <strong>${b.title}</strong>
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </div>
+                </div>`
+              : `<div class="flex flex-wrap items-center gap-2 pt-1">
+                  ${qState.vaultBoxes
+                    .map(
+                      (b, i) => `
+                    <button data-vault-pick="${i}" class="btn-tactile px-4 py-2 bg-[#18181c] hover:bg-zinc-800 text-xs font-mono-code font-bold text-[#facc15]">
+                      ВСКРЫТЬ СЕЙФ [${b.label}]
+                    </button>
+                  `
+                    )
+                    .join('')}
+                  <button data-vault-pick="-1" class="btn-tactile px-4 py-2 bg-zinc-900 text-xs font-mono-code text-zinc-300">
+                    ОТКАЗАТЬСЯ (+100 ГАРАНТИРОВАННО)
+                  </button>
+                </div>`
+            : ''
+        }
+
+        ${
+          ev.type === 'auction' && !qState.auctionResolved
+            ? `<div class="p-3.5 bg-zinc-900 border border-zinc-700 space-y-3">
+                <div class="flex items-center justify-between font-mono-code text-xs">
+                  <span class="text-zinc-400">ЛИДЕР ТОРГОВ: <strong class="text-white">${this.escapeHtml(
+                    this.state.players.find((p) => p.id === qState.auctionLeaderId)?.name || ''
+                  )}</strong></span>
+                  <span class="text-[#facc15] font-extrabold text-sm">СТАВКА: ${qState.auctionHighestBid} PTS</span>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  ${this.state.players
+                    .map(
+                      (p) => `
+                    <div class="p-2 bg-[#121215] border border-zinc-800 flex items-center justify-between gap-1">
+                      <span class="text-xs font-semibold text-zinc-200 truncate">${this.escapeHtml(p.name)}</span>
+                      <button
+                        data-auction-bid="${p.id}:${Math.min(500, qState.auctionHighestBid + 50)}"
+                        class="px-2 py-1 bg-zinc-800 hover:bg-[#facc15] hover:text-black font-mono-code text-[10px] font-bold text-[#facc15]"
+                      >${Math.min(500, qState.auctionHighestBid + 50)}</button>
+                    </div>
+                  `
+                    )
+                    .join('')}
+                </div>
+                <button id="btn-auction-lock" class="btn-tactile w-full py-2.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase">
+                  ПРОДАНО ИГРОКУ ${this.escapeHtml(
+                    this.state.players.find((p) => p.id === qState.auctionLeaderId)?.name || ''
+                  )} ЗА ${qState.auctionHighestBid} PTS — ОТКРЫТЬ ВОПРОС!
+                </button>
+              </div>`
+            : ''
+        }
+
+        ${
+          ev.type === 'duel' && !qState.duelOpponentId
+            ? `<div class="p-3 bg-zinc-900 border border-zinc-700 space-y-2">
+                <div class="font-mono-code text-xs text-rose-400 font-bold">
+                  ${this.escapeHtml(activePlayer.name)}, ВЫБЕРИТЕ СОПЕРНИКА ДЛЯ ДУЭЛИ 1 НА 1:
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  ${otherPlayers
+                    .map(
+                      (op) => `
+                    <button data-duel-opponent="${op.id}" class="btn-tactile px-3 py-1.5 bg-[#18181c] hover:bg-rose-950 font-mono-code text-xs text-white">
+                      ВЫЗВАТЬ: ${this.escapeHtml(op.name)} (${op.score} PTS)
+                    </button>
+                  `
+                    )
+                    .join('')}
+                </div>
+              </div>`
+            : ''
+        }
+
+        ${
+          ev.type === 'dilemma'
+            ? !qState.dilemmaPartnerId
+              ? `<div class="p-3 bg-zinc-900 border border-zinc-700 space-y-2">
+                  <div class="font-mono-code text-xs text-[#facc15] font-bold">
+                    ВЫБЕРИТЕ НАПАРНИКА ДЛЯ СДЕЛКИ / ДИЛЕММЫ:
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    ${otherPlayers
+                      .map(
+                        (op) => `
+                      <button data-dilemma-partner="${op.id}" class="btn-tactile px-3 py-1.5 bg-[#18181c] hover:bg-zinc-800 font-mono-code text-xs text-white">
+                        ${this.escapeHtml(op.name)} (${op.score} PTS)
+                      </button>
+                    `
+                      )
+                      .join('')}
+                  </div>
+                </div>`
+              : qState.dilemmaResolved
+              ? `<div class="p-3 bg-zinc-900 border border-zinc-700 font-mono-code text-xs font-bold text-[#facc15]">
+                  ${this.escapeHtml(qState.dilemmaResultText)}
+                </div>`
+              : `<div class="p-3 bg-zinc-900 border border-zinc-700 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  ${[activePlayer, this.state.players.find((p) => p.id === qState.dilemmaPartnerId)]
+                    .filter(Boolean)
+                    .map((participant) => {
+                      const chosen = Boolean(qState.dilemmaChoices[participant.id]);
+                      return `
+                        <div class="p-2.5 bg-[#121215] border border-zinc-800 flex items-center justify-between">
+                          <span class="text-xs font-bold text-white">${this.escapeHtml(participant.name)}:</span>
+                          ${
+                            chosen
+                              ? `<span class="font-mono-code text-xs text-emerald-400 font-bold">РЕШЕНИЕ ПРИНЯТО [СКРЫТО]</span>`
+                              : `<div class="flex gap-1.5">
+                                  <button data-dilemma="${participant.id}:coop" class="px-2.5 py-1 bg-zinc-800 hover:bg-emerald-600 font-mono-code text-xs text-zinc-200 font-bold">СДЕЛКА</button>
+                                  <button data-dilemma="${participant.id}:betray" class="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 font-mono-code text-xs text-zinc-200 font-bold">КРАЖА</button>
+                                </div>`
+                          }
+                        </div>
+                      `;
+                    })
+                    .join('')}
+                </div>`
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  // --- РЕНДЕР РЕЖИМА 2: ПРАВДОРУБ (FIBBAGE С ЗАЩИТОЙ ЭКРАНА) ---
+  renderBluffAct() {
+    const bState = this.state.bluff;
+    const item = bState.currentItem;
+    if (!item) return '';
+
+    return `
+      <div class="studio-panel p-6 sm:p-8 max-w-4xl mx-auto space-y-6 reveal-stage">
+        <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-zinc-800">
+          <div class="flex items-center gap-2">
+            <span class="px-2.5 py-1 bg-[#facc15] text-black font-mono-code font-extrabold text-xs">
+              BLUFF // ${item.category.toUpperCase()}
+            </span>
+          </div>
+          <span class="font-mono-code text-xs text-zinc-400">
+            ПРАВДА: +400 PTS • КАЖДЫЙ ПОЙМАННЫЙ В ЛОВУШКУ КОЛЛЕГА: +300 PTS
+          </span>
         </div>
 
         <h3 class="font-display font-bold text-xl sm:text-2xl text-white leading-relaxed">
@@ -1699,38 +2583,52 @@ class PartySyncApp {
         </h3>
 
         ${
-          phase === 'collect'
+          bState.phase === 'collect'
             ? `
           <div class="space-y-4">
-            <div class="p-4 rounded-2xl bg-white/[0.03] border border-white/10">
-              <div class="text-xs font-semibold text-slate-300 mb-3">
-                Вариант А: Вписать блефы игроков (с пультов P2P или вписать ниже) • Вариант Б: Сразу открыть 5 вариантов на экране!
+            <div class="p-4 bg-[#18181c] border border-zinc-800 space-y-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-mono-code text-xs text-zinc-300 font-bold">
+                  ПРИЁМ ЛОЖНЫХ ВЕРСИЙ ИГРОКОВ (ВВОД С ПУЛЬТОВ ИЛИ ВРУЧНУЮ):
+                </span>
+                <button id="btn-toggle-bluff-mask" class="px-2.5 py-1 bg-zinc-900 border border-zinc-700 font-mono-code text-[11px] text-[#facc15]">
+                  ${bState.maskInputs ? 'РЕЖИМ СТРИМА: БУКВЫ СКРЫТЫ (••••)' : 'БУКВЫ ВИДНЫ'}
+                </button>
               </div>
+
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 ${this.state.players
                   .map((p) => {
-                    const hasBluff = Boolean(this.state.bluff.submittedBluffs[p.id]);
+                    const submitted = Boolean(bState.submittedBluffs[p.id]);
                     return `
-                    <div class="flex items-center gap-2 p-2 rounded-xl bg-black/25 border border-white/10">
-                      <span class="text-xs font-semibold text-slate-300 w-28 truncate">${this.escapeHtml(p.name)}:</span>
-                      ${
-                        hasBluff
-                          ? `<span class="text-xs text-emerald-400 font-mono-code">Блеф готов ✓</span>`
-                          : `<input type="text" data-bluff-input="${p.id}" placeholder="Тайный блеф (Enter)" class="flex-1 bg-transparent text-xs text-white focus:outline-none border-b border-white/15 focus:border-pink-400 py-0.5" />`
-                      }
-                    </div>
-                  `;
+                      <div class="flex items-center justify-between gap-2 p-2.5 bg-[#121215] border border-zinc-800">
+                        <span class="text-xs font-bold text-white w-28 truncate">${this.escapeHtml(p.name)}:</span>
+                        ${
+                          submitted
+                            ? `<div class="flex items-center gap-2">
+                                <span class="font-mono-code text-xs text-emerald-400 font-bold">ПРИНЯТО [СКРЫТО]</span>
+                                <button data-bluff-clear="${p.id}" class="text-[10px] font-mono-code text-zinc-500 hover:text-white underline">Изменить</button>
+                              </div>`
+                            : `<input
+                                type="${bState.maskInputs ? 'password' : 'text'}"
+                                data-bluff-input="${p.id}"
+                                placeholder="Вписать блеф + Enter"
+                                class="flex-1 bg-zinc-900 border border-zinc-700 focus:border-[#facc15] focus:outline-none px-2.5 py-1 text-xs text-white font-mono-code"
+                              />`
+                        }
+                      </div>
+                    `;
                   })
                   .join('')}
               </div>
             </div>
 
             <div class="flex flex-wrap items-center gap-3">
-              <button id="btn-bluff-start-vote" class="px-5 py-3 rounded-2xl bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-400 hover:to-purple-500 text-white font-display font-bold text-sm shadow-lg shadow-pink-500/20 transition">
-                🎭 Перемешать блефы и начать голосование
+              <button id="btn-bluff-start-vote" class="btn-tactile px-6 py-3.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase">
+                ПЕРЕМЕШАТЬ ВЕРСИИ И ПЕРЕЙТИ К ГОЛОСОВАНИЮ
               </button>
-              <button id="btn-bluff-quick" class="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-slate-200 text-xs font-semibold transition">
-                ⚡ Играем без ввода: сразу показать 5 готовых вариантов на экране
+              <button id="btn-bluff-quick" class="btn-tactile px-4 py-3.5 bg-[#18181c] hover:bg-zinc-800 text-zinc-200 font-mono-code text-xs font-bold">
+                БЫСТРЫЙ РЕЖИМ НА 1 ЭКРАНЕ (5 ГОТОВЫХ ВАРИАНТОВ БЕЗ ВВОДА)
               </button>
             </div>
           </div>
@@ -1739,37 +2637,38 @@ class PartySyncApp {
         }
 
         ${
-          phase === 'vote'
+          bState.phase === 'vote'
             ? `
-          <div class="space-y-4 animate-pop">
-            <div class="text-xs font-bold uppercase tracking-wider text-pink-300">
-              Где здесь настоящая ПРАВДА? (Кликните на имя игрока под вариантом, за который он голосует):
+          <div class="space-y-4 reveal-stage">
+            <div class="font-mono-code text-xs font-bold text-[#facc15] uppercase">
+              ФАЗА ГОЛОСОВАНИЯ: КАЖДЫЙ ИГРОК ВЫБИРАЕТ ВАРИАНТ, КОТОРЫЙ СЧИТАЕТ ПРАВДОЙ
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              ${this.state.bluff.choices
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              ${bState.choices
                 .map(
                   (c, idx) => `
-                <div class="p-4 rounded-2xl bg-white/[0.04] border border-white/15 flex flex-col justify-between gap-3">
+                <div class="p-4 bg-[#18181c] border border-zinc-700 flex flex-col justify-between gap-3">
                   <div class="flex items-start gap-3">
-                    <span class="w-7 h-7 rounded-lg bg-pink-500/20 border border-pink-500/40 text-pink-300 font-mono-code font-bold text-xs flex items-center justify-center shrink-0">
-                      ${idx + 1}
+                    <span class="w-7 h-7 bg-zinc-900 border border-zinc-700 text-[#facc15] font-mono-code font-extrabold text-xs flex items-center justify-center shrink-0">
+                      0${idx + 1}
                     </span>
                     <div class="font-semibold text-base text-white">${this.escapeHtml(c.text)}</div>
                   </div>
-                  <div class="flex flex-wrap gap-1.5 pt-2 border-t border-white/10">
+                  <div class="flex flex-wrap gap-1.5 pt-2 border-t border-zinc-800">
                     ${this.state.players
                       .map((p) => {
-                        const votedThis = this.state.bluff.votes[p.id] === c.id;
+                        const votedThis = bState.votes[p.id] === c.id;
                         return `
-                        <button
-                          data-bluff-vote="${p.id}:${c.id}"
-                          class="px-2 py-1 rounded-lg text-[11px] font-semibold transition border ${
-                            votedThis
-                              ? 'bg-pink-500 text-white border-pink-400'
-                              : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
-                          }"
-                        >${this.escapeHtml(p.name)}</button>
-                      `;
+                          <button
+                            data-bluff-vote="${p.id}:${c.id}"
+                            class="px-2 py-1 font-mono-code text-[10px] font-bold border transition ${
+                              votedThis
+                                ? 'bg-[#facc15] text-black border-black'
+                                : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-white'
+                            }"
+                          >${this.escapeHtml(p.name)}</button>
+                        `;
                       })
                       .join('')}
                   </div>
@@ -1779,8 +2678,8 @@ class PartySyncApp {
                 .join('')}
             </div>
 
-            <button id="btn-bluff-reveal" class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-display font-bold text-sm shadow-lg transition">
-              🔥 ВСКРЫТЬ ПРАВДУ И РАЗОБЛАЧИТЬ БЛЕФЫ!
+            <button id="btn-bluff-reveal" class="btn-tactile w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-black font-display font-extrabold text-xs uppercase">
+              ВСКРЫТЬ НАСТОЯЩИЙ ФАКТ И АВТОРОВ ЛЖИ
             </button>
           </div>
         `
@@ -1788,13 +2687,13 @@ class PartySyncApp {
         }
 
         ${
-          phase === 'reveal'
+          bState.phase === 'reveal'
             ? `
-          <div class="space-y-4 animate-pop">
+          <div class="space-y-4 reveal-stage">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              ${this.state.bluff.choices
+              ${bState.choices
                 .map((c) => {
-                  const voters = Object.entries(this.state.bluff.votes)
+                  const voters = Object.entries(bState.votes)
                     .filter(([, cid]) => cid === c.id)
                     .map(([pid]) => this.state.players.find((p) => p.id === pid)?.name)
                     .filter(Boolean);
@@ -1803,40 +2702,42 @@ class PartySyncApp {
                     .filter(Boolean);
 
                   return `
-                  <div class="p-4 rounded-2xl border ${
-                    c.isTruth
-                      ? 'bg-emerald-500/20 border-2 border-emerald-400'
-                      : authors.length > 0
-                      ? 'bg-pink-500/15 border-pink-500/40'
-                      : 'bg-white/[0.03] border-white/10 opacity-65'
-                  }">
-                    <div class="flex items-center justify-between text-xs font-bold mb-1">
-                      <span class="${c.isTruth ? 'text-emerald-300' : 'text-pink-300'}">
+                    <div class="p-4 border-2 ${
+                      c.isTruth
+                        ? 'bg-emerald-950/60 border-emerald-400'
+                        : authors.length > 0
+                        ? 'bg-rose-950/40 border-rose-500/60'
+                        : 'bg-zinc-950 border-zinc-800 opacity-60'
+                    }">
+                      <div class="font-mono-code text-[11px] font-extrabold uppercase mb-1 ${
+                        c.isTruth ? 'text-emerald-400' : 'text-rose-400'
+                      }">
                         ${
                           c.isTruth
-                            ? '✅ НАСТОЯЩАЯ ПРАВДА (+400)'
+                            ? 'НАСТОЯЩАЯ ПРАВДА (+400 PTS)'
                             : authors.length > 0
-                            ? `🎭 Блеф от: ${authors.join(', ')} (+300 за каждого)`
-                            : '🤖 Ловушка ведущего'
+                            ? `ЛОЖЬ ИГРОКА: ${authors.join(', ')} (+300 ЗА КАЖДОГО)`
+                            : 'ЛОВУШКА СИСТЕМЫ'
                         }
-                      </span>
+                      </div>
+                      <div class="font-bold text-base text-white">${this.escapeHtml(c.text)}</div>
+                      <div class="mt-2 font-mono-code text-xs text-zinc-300">
+                        ${voters.length > 0 ? `ПОВЕРИЛИ: ${voters.join(', ')}` : 'Никто не выбрал'}
+                      </div>
                     </div>
-                    <div class="font-bold text-base text-white">${this.escapeHtml(c.text)}</div>
-                    ${
-                      voters.length > 0
-                        ? `<div class="mt-2 text-xs text-slate-300">Сюда проголосовали: <strong>${voters.join(', ')}</strong></div>`
-                        : `<div class="mt-2 text-xs text-slate-500">Никто не выбрал</div>`
-                    }
-                  </div>
-                `;
+                  `;
                 })
                 .join('')}
             </div>
 
-            <div class="p-4 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-between gap-4">
-              <p class="text-sm text-slate-200">${this.escapeHtml(item.fact)}</p>
-              <button id="btn-next-turn" class="px-5 py-3 rounded-xl bg-gradient-to-r from-indigo-500 to-pink-500 text-white font-display font-bold text-sm shrink-0 flex items-center gap-2">
-                Следующий ход <i data-lucide="arrow-right" class="w-4 h-4"></i>
+            <div class="p-5 bg-zinc-900 border border-zinc-700 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div class="space-y-1">
+                <div class="font-mono-code text-xs text-[#facc15] font-bold uppercase">ИСТОРИЧЕСКАЯ СПРАВКА:</div>
+                <p class="text-sm text-zinc-200 leading-relaxed">${this.escapeHtml(item.fact)}</p>
+              </div>
+              <button id="btn-next-turn" class="btn-tactile px-6 py-3.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase shrink-0 flex items-center gap-2">
+                СЛЕДУЮЩИЙ ХОД
+                <i data-lucide="arrow-right" class="w-4 h-4"></i>
               </button>
             </div>
           </div>
@@ -1847,119 +2748,145 @@ class PartySyncApp {
     `;
   }
 
+  // --- РЕНДЕР РЕЖИМА 3: СПЕКТР (WAVELENGTH БЕЗ ЗАСВЕТА НА СТРИМЕ) ---
   renderWavelengthAct() {
     const w = this.state.wavelength;
     if (!w.card) return '';
     const activePlayer = this.getActivePlayer();
 
     return `
-      <div class="glass-card rounded-3xl p-6 sm:p-8 max-w-4xl mx-auto space-y-6">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span class="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 border border-emerald-500/40 text-emerald-300">
-            📡 На одной волне • Категория: ${w.card.category}
+      <div class="studio-panel p-6 sm:p-8 max-w-4xl mx-auto space-y-6 reveal-stage">
+        <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-zinc-800">
+          <span class="px-2.5 py-1 bg-[#facc15] text-black font-mono-code font-extrabold text-xs uppercase">
+            SPECTRUM // ${w.card.category}
           </span>
-          <span class="text-xs text-slate-400">
-            Телепат раунда: <strong class="text-white">${this.escapeHtml(activePlayer.name)}</strong>
+          <span class="font-mono-code text-xs text-zinc-300">
+            НАВОДЧИК (ТЕЛЕПАТ): <strong class="text-[#facc15]">${this.escapeHtml(activePlayer.name)}</strong>
           </span>
         </div>
 
-        <!-- Полюса спектра -->
+        <!-- Два полюса шкалы -->
         <div class="grid grid-cols-2 gap-4">
-          <div class="p-4 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-left">
-            <div class="text-xs font-mono-code text-indigo-300 uppercase">0% (Левый край)</div>
-            <div class="font-display font-bold text-lg sm:text-xl text-white mt-1">◄ ${this.escapeHtml(w.card.left)}</div>
+          <div class="p-4 bg-[#18181c] border-l-4 border-l-blue-500 border border-zinc-800">
+            <div class="font-mono-code text-xs text-blue-400 font-bold">0% [ЛЕВЫЙ ПОЛЮС]</div>
+            <div class="font-display font-bold text-lg text-white mt-1">${this.escapeHtml(w.card.left)}</div>
           </div>
-          <div class="p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-right">
-            <div class="text-xs font-mono-code text-emerald-300 uppercase">100% (Правый край)</div>
-            <div class="font-display font-bold text-lg sm:text-xl text-white mt-1">${this.escapeHtml(w.card.right)} ►</div>
+          <div class="p-4 bg-[#18181c] border-r-4 border-r-emerald-500 border border-zinc-800 text-right">
+            <div class="font-mono-code text-xs text-emerald-400 font-bold">100% [ПРАВЫЙ ПОЛЮС]</div>
+            <div class="font-display font-bold text-lg text-white mt-1">${this.escapeHtml(w.card.right)}</div>
           </div>
         </div>
 
-        <!-- Управление секретной мишенью для Телепата -->
-        <div class="p-4 rounded-2xl bg-white/[0.03] border border-white/10 flex flex-wrap items-center justify-between gap-3">
-          <div class="text-xs text-slate-300">
+        <!-- Безопасная передача секретной координаты без засвета на стриме -->
+        <div class="p-4 bg-zinc-900 border border-zinc-700 flex flex-wrap items-center justify-between gap-3">
+          <div class="text-xs text-zinc-300 font-mono-code">
             ${
               w.peekTarget || w.revealed
-                ? `<span class="text-amber-300 font-bold text-sm">🎯 Секретная мишень находится на отметке: ${w.targetValue}%</span>`
-                : `1) Остальные на секунду отворачиваются (или ${this.escapeHtml(
-                    activePlayer.name
-                  )} смотрит на телефоне в P2P). 2) Телепат называет ассоциацию на этот процент!`
+                ? `<span class="text-[#facc15] font-extrabold text-sm">СЕКРЕТНАЯ МИШЕНЬ: ${w.targetValue}%</span>`
+                : `КАК ПЕРЕДАТЬ МИШЕНЬ ИГРОКУ ${this.escapeHtml(activePlayer.name).toUpperCase()} БЕЗ СПОЙЛЕРА НА СТРИМЕ:`
             }
           </div>
           ${
             !w.revealed
-              ? `<button id="btn-wavelength-peek" class="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-bold transition">
-                  ${w.peekTarget ? '🙈 Спрятать мишень от зала' : '👁️ Подсмотреть мишень (Телепату)'}
-                </button>`
+              ? `<div class="flex flex-wrap gap-2">
+                  <button id="btn-wavelength-copy" class="btn-tactile px-3.5 py-2 bg-[#facc15] text-black font-mono-code text-xs font-extrabold flex items-center gap-1.5">
+                    <i data-lucide="clipboard-copy" class="w-3.5 h-3.5"></i>
+                    СКОПИРОВАТЬ МИШЕНЬ В БУФЕР (БЕЗ ПОКАЗА)
+                  </button>
+                  <button id="btn-wavelength-peek" class="btn-tactile px-3 py-2 bg-[#18181c] text-zinc-300 font-mono-code text-xs">
+                    ${w.peekTarget ? 'СКРЫТЬ С ЭКРАНА' : 'ПОКАЗАТЬ НА ЭКРАНЕ'}
+                  </button>
+                </div>`
               : ''
           }
         </div>
 
-        <!-- Ползунок команды -->
-        <div class="p-6 rounded-2xl bg-black/35 border border-white/10 space-y-4">
-          <div class="flex items-center justify-between">
-            <span class="text-xs uppercase tracking-wider text-slate-400 font-bold">Куда команда ставит стрелку:</span>
-            <span id="wavelength-guess-label" class="font-mono-code font-extrabold text-2xl text-indigo-400">${w.teamGuess}%</span>
+        <!-- Шкала и ползунок команды -->
+        <div class="p-6 bg-[#18181c] border border-zinc-800 space-y-5">
+          <div class="flex items-center justify-between font-mono-code">
+            <span class="text-xs text-zinc-400 uppercase">КООРДИНАТА КОМАНДЫ:</span>
+            <span id="wavelength-guess-label" class="font-extrabold text-2xl text-[#facc15]">${w.teamGuess}%</span>
           </div>
 
-          <div class="relative pt-2 pb-4">
-            <input
-              id="wavelength-slider-input"
-              type="range"
-              min="0"
-              max="100"
-              value="${w.teamGuess}"
-              ${w.revealed ? 'disabled' : ''}
-              class="wavelength-slider"
-            />
-            ${
-              w.revealed
-                ? `<div class="mt-4 p-3 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-center animate-pop">
-                    <div class="font-display font-bold text-lg text-white">
-                      🎯 Реальная мишень: <span class="text-emerald-300">${w.targetValue}%</span> • Ответ команды: <span class="text-indigo-300">${w.teamGuess}%</span> (Разница: ${Math.abs(
-                    w.targetValue - w.teamGuess
-                  )}%)
-                    </div>
-                  </div>`
-                : ''
-            }
-          </div>
+          <input
+            id="wavelength-slider-input"
+            type="range"
+            min="0"
+            max="100"
+            value="${w.teamGuess}"
+            ${w.revealed ? 'disabled' : ''}
+            class="spectrum-slider"
+          />
 
-          <!-- Ставки остальных игроков Левее / Правее -->
-          <div class="pt-3 border-t border-white/10">
-            <div class="text-xs text-slate-400 mb-2">Индивидуальные ставки зрителей (+150 очков): где реальная мишень относительно стрелки команды?</div>
+          ${
+            w.revealed && w.resultSummary
+              ? `<div class="p-4 bg-zinc-900 border-2 border-emerald-400 space-y-1 reveal-stage">
+                  <div class="font-mono-code text-xs text-emerald-400 font-extrabold uppercase">${w.resultSummary.zoneName}</div>
+                  <div class="font-display font-bold text-lg text-white">
+                    Мишень: ${w.targetValue}% • Ответ команды: ${w.teamGuess}% (Отклонение: ${w.resultSummary.diff}%)
+                  </div>
+                  <div class="font-mono-code text-xs text-zinc-300">
+                    Наводчик: +${w.resultSummary.telepathPts} PTS • Команда: по +${w.resultSummary.teamPts} PTS
+                    ${
+                      w.resultSummary.sideWinners.length > 0
+                        ? ` • Бонус за сторону (+150): ${w.resultSummary.sideWinners.join(', ')}`
+                        : ''
+                    }
+                  </div>
+                </div>`
+              : ''
+          }
+
+          <!-- Индивидуальные ставки зрителей Левее / Правее -->
+          <div class="pt-4 border-t border-zinc-800">
+            <div class="font-mono-code text-xs text-zinc-400 mb-2.5">
+              СТАВКИ ОСТАЛЬНЫХ ИГРОКОВ (+150 PTS): ГДЕ НАСТОЯЩИЙ ЦЕНТР МИШЕНИ ОТНОСИТЕЛЬНО ПОЛЗУНКА?
+            </div>
             <div class="grid grid-cols-2 sm:grid-cols-5 gap-2">
               ${this.state.players
                 .filter((p) => p.id !== activePlayer.id)
                 .map((p) => {
                   const sv = w.sideVotes[p.id];
                   return `
-                  <div class="p-2 rounded-xl bg-white/[0.03] border border-white/10 text-center space-y-1.5">
-                    <div class="text-xs font-semibold text-white truncate">${this.escapeHtml(p.name)}</div>
-                    <div class="flex justify-center gap-1">
-                      <button data-wave-side="${p.id}:left" ${w.revealed ? 'disabled' : ''} class="px-2 py-1 rounded text-[10px] font-bold border ${
-                    sv === 'left' ? 'bg-indigo-500 text-white border-indigo-400' : 'bg-white/5 text-slate-400 border-white/10'
-                  }">◄ Левее</button>
-                      <button data-wave-side="${p.id}:right" ${w.revealed ? 'disabled' : ''} class="px-2 py-1 rounded text-[10px] font-bold border ${
-                    sv === 'right' ? 'bg-emerald-500 text-white border-emerald-400' : 'bg-white/5 text-slate-400 border-white/10'
-                  }">Правее ►</button>
+                    <div class="p-2.5 bg-[#121215] border border-zinc-800 space-y-2">
+                      <div class="text-xs font-bold text-white truncate">${this.escapeHtml(p.name)}</div>
+                      <div class="grid grid-cols-2 gap-1">
+                        <button
+                          data-wave-side="${p.id}:left"
+                          ${w.revealed ? 'disabled' : ''}
+                          class="py-1 font-mono-code text-[10px] font-bold border ${
+                            sv === 'left'
+                              ? 'bg-blue-500 text-white border-black'
+                              : 'bg-zinc-900 text-zinc-400 border-zinc-800'
+                          }"
+                        >◄ ЛЕВЕЕ</button>
+                        <button
+                          data-wave-side="${p.id}:right"
+                          ${w.revealed ? 'disabled' : ''}
+                          class="py-1 font-mono-code text-[10px] font-bold border ${
+                            sv === 'right'
+                              ? 'bg-emerald-500 text-black border-black'
+                              : 'bg-zinc-900 text-zinc-400 border-zinc-800'
+                          }"
+                        >ПРАВЕЕ ►</button>
+                      </div>
                     </div>
-                  </div>
-                `;
+                  `;
                 })
                 .join('')}
             </div>
           </div>
         </div>
 
-        <div class="flex justify-end gap-3">
+        <div class="flex justify-end">
           ${
             !w.revealed
-              ? `<button id="btn-wavelength-reveal" class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-indigo-500 to-emerald-500 text-white font-display font-bold text-sm shadow-lg transition">
-                  🎯 ОТКРЫТЬ ШИРМУ И ПРОВЕРИТЬ ПОПАДАНИЕ!
+              ? `<button id="btn-wavelength-reveal" class="btn-tactile w-full py-3.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase">
+                  ВСКРЫТЬ МИШЕНЬ И РАССЧИТАТЬ ТОЧНОСТЬ
                 </button>`
-              : `<button id="btn-next-turn" class="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-indigo-500 to-pink-500 text-white font-display font-bold text-sm flex items-center gap-2">
-                  Следующий ход <i data-lucide="arrow-right" class="w-4 h-4"></i>
+              : `<button id="btn-next-turn" class="btn-tactile px-6 py-3.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase flex items-center gap-2">
+                  СЛЕДУЮЩИЙ ХОД
+                  <i data-lucide="arrow-right" class="w-4 h-4"></i>
                 </button>`
           }
         </div>
@@ -1967,85 +2894,99 @@ class PartySyncApp {
     `;
   }
 
+  // --- РЕНДЕР РЕЖИМА 4: КЕЙС-БАТТЛ С ИИ ---
   renderCaseAct() {
     const cb = this.state.caseBattle;
     if (!cb.scenario) return '';
     const activePlayer = this.getActivePlayer();
+    const otherPlayers = this.state.players.filter((p) => p.id !== activePlayer.id);
 
     return `
-      <div class="glass-card rounded-3xl p-6 sm:p-8 max-w-4xl mx-auto space-y-6">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span class="px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/20 border border-amber-500/40 text-amber-300">
-            🤖 Кейс-Баттл с ИИ-Арбитром
+      <div class="studio-panel p-6 sm:p-8 max-w-4xl mx-auto space-y-6 reveal-stage">
+        <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-zinc-800">
+          <span class="px-2.5 py-1 bg-[#facc15] text-black font-mono-code font-extrabold text-xs uppercase">
+            AI CASE ARBITER
           </span>
-          <span class="text-xs text-slate-300">
-            Отдувается: <strong class="text-white">${this.escapeHtml(activePlayer.name)}</strong> (${
-      activePlayer.role === 'dev' ? '💻 Прогер' : '📊 Менеджер'
-    })
+          <span class="font-mono-code text-xs text-zinc-300">
+            ОТВЕЧАЕТ: <strong class="text-white">${this.escapeHtml(activePlayer.name)}</strong> [${activePlayer.role.toUpperCase()}]
           </span>
         </div>
 
-        <div class="space-y-3">
+        <div class="space-y-2">
           <h3 class="font-display font-bold text-xl sm:text-2xl text-white">${this.escapeHtml(cb.scenario.title)}</h3>
-          <p class="text-base text-slate-200 leading-relaxed">${this.escapeHtml(cb.scenario.situation)}</p>
-          <p class="text-xs text-indigo-300 font-medium">${this.escapeHtml(cb.scenario.roleHint)}</p>
+          <p class="text-base text-zinc-200 leading-relaxed">${this.escapeHtml(cb.scenario.situation)}</p>
+          <p class="font-mono-code text-xs text-[#facc15]">${this.escapeHtml(cb.scenario.roleHint)}</p>
         </div>
 
-        <!-- Карточка секретного условия-мутатора -->
-        <div class="p-4 rounded-2xl bg-gradient-to-r from-fuchsia-500/20 to-indigo-500/20 border border-fuchsia-400/40 flex items-center justify-between gap-3">
+        <!-- Мутатор -->
+        <div class="p-4 bg-[#18181c] border-l-4 border-l-rose-500 border border-zinc-800 flex items-center justify-between gap-4">
           <div>
-            <div class="text-[11px] font-mono-code uppercase text-fuchsia-300 font-bold">🎲 Обязательное условие-мутатор:</div>
-            <div class="text-sm font-bold text-white mt-0.5">${this.escapeHtml(cb.mutator)}</div>
+            <div class="font-mono-code text-[10px] text-rose-400 font-bold uppercase">ОБЯЗАТЕЛЬНОЕ УСЛОВИЕ-МУТАТОР:</div>
+            <div class="font-bold text-sm text-white mt-0.5">${this.escapeHtml(cb.mutator)}</div>
           </div>
-          <button id="btn-reroll-mutator" class="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-slate-200 shrink-0 transition">
-            🔄 Другой мутатор
+          <button id="btn-reroll-mutator" class="btn-tactile px-3 py-1.5 bg-zinc-900 text-xs font-mono-code text-zinc-300 shrink-0">
+            СМЕНИТЬ УСЛОВИЕ
           </button>
         </div>
 
-        <!-- Ввод ответа или голосовой диктант -->
-        <div class="space-y-2.5">
+        <div class="space-y-2">
           <div class="flex items-center justify-between">
-            <label class="text-xs font-semibold text-slate-300">
-              Кратко запишите план игрока (или нажмите «Голосовой ввод», пока он отвечает в Discord!):
-            </label>
-            <button id="btn-voice-dictate" class="px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition ${
-              this.speechRecognition
-                ? 'bg-rose-500 text-white border-rose-400 animate-pulse'
-                : 'bg-indigo-500/20 border-indigo-500/40 text-indigo-200 hover:bg-indigo-500/30'
+            <label class="font-mono-code text-xs text-zinc-400">ТЕЗИСЫ ОТВЕТА ИГРОКА:</label>
+            <button id="btn-voice-dictate" class="btn-tactile px-3 py-1 font-mono-code text-xs font-bold flex items-center gap-1.5 ${
+              this.speechRecognition ? 'bg-rose-600 text-white' : 'bg-[#18181c] text-[#facc15]'
             }">
               <i data-lucide="mic" class="w-3.5 h-3.5"></i>
-              ${this.speechRecognition ? 'Слушаю речь... (Стоп)' : '🎙️ Голосовой ввод (RU)'}
+              ${this.speechRecognition ? 'ЗАПИСЬ ИДЁТ (СТОП)' : 'ГОЛОСОВОЙ ВВОД (RU)'}
             </button>
           </div>
           <textarea
             id="case-answer-input"
             rows="3"
-            placeholder="Например: Мы скажем совету директоров, что танцующий енот — это наш новый ИИ-маскот на синей изоленте, и закажем всем шаурму..."
-            class="w-full rounded-2xl bg-black/40 border border-white/15 focus:border-indigo-400 focus:outline-none p-4 text-sm text-white"
+            placeholder="Запишите ключевую идею ответа игрока или включите микрофон..."
+            class="w-full bg-[#18181c] border border-zinc-700 focus:border-[#facc15] focus:outline-none p-4 text-sm text-white"
           >${this.escapeHtml(cb.answerText)}</textarea>
         </div>
 
         ${
           cb.verdictData
-            ? `<div class="p-5 rounded-2xl bg-emerald-500/15 border-2 border-emerald-400/60 space-y-2 animate-pop">
+            ? `<div class="p-5 bg-zinc-900 border-2 border-[#facc15] space-y-4 reveal-stage">
                 <div class="flex items-center justify-between">
-                  <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/30 text-emerald-200 text-xs font-bold">
-                    🏆 Титул: ${this.escapeHtml(cb.verdictData.highlight)}
+                  <span class="px-2.5 py-1 bg-[#facc15] text-black font-mono-code font-extrabold text-xs uppercase">
+                    ВЕРДИКТ: ${this.escapeHtml(cb.verdictData.highlight)}
                   </span>
-                  <span class="font-mono-code font-extrabold text-xl text-emerald-300">+${cb.verdictData.score} очков!</span>
+                  <span class="font-mono-code font-extrabold text-xl text-emerald-400">+${cb.verdictData.score} PTS</span>
                 </div>
-                <p class="text-sm text-white leading-relaxed">${this.escapeHtml(cb.verdictData.verdict)}</p>
-                <div class="pt-3 flex items-center justify-between border-t border-white/10">
-                  <button id="btn-case-like" class="px-3.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-bold transition">
-                    👏 Респект от коллег (+50 очков) • Нажато: ${cb.peerLikes}
-                  </button>
-                  <button id="btn-next-turn" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-pink-500 text-white font-display font-bold text-sm flex items-center gap-2">
-                    Следующий ход <i data-lucide="arrow-right" class="w-4 h-4"></i>
-                  </button>
+                <p class="text-sm text-zinc-200 leading-relaxed">${this.escapeHtml(cb.verdictData.verdict)}</p>
+
+                <div class="pt-3 border-t border-zinc-800 space-y-2">
+                  <div class="font-mono-code text-xs text-zinc-400">ОДОБРЕНИЕ КОЛЛЕГ (+50 PTS ОТ КАЖДОГО ИГРОКА):</div>
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex flex-wrap gap-1.5">
+                      ${otherPlayers
+                        .map((p) => {
+                          const liked = cb.votedPeerIds.includes(p.id);
+                          return `
+                            <button
+                              data-case-vote="${p.id}"
+                              class="px-3 py-1 font-mono-code text-xs font-bold border ${
+                                liked
+                                  ? 'bg-emerald-500 text-black border-black'
+                                  : 'bg-[#18181c] text-zinc-400 border-zinc-700 hover:text-white'
+                              }"
+                            >+50 ОТ ${this.escapeHtml(p.name)}</button>
+                          `;
+                        })
+                        .join('')}
+                    </div>
+                    <button id="btn-next-turn" class="btn-tactile px-6 py-3 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase flex items-center gap-2">
+                      СЛЕДУЮЩИЙ ХОД
+                      <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                    </button>
+                  </div>
                 </div>
               </div>`
-            : `<button id="btn-judge-case" ${cb.isJudging ? 'disabled' : ''} class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-pink-500 to-indigo-500 text-white font-display font-bold text-sm shadow-lg transition">
-                ${cb.isJudging ? '🤖 Нейро-Судья выносит вердикт...' : '⚖️ ОЦЕНИТЬ ОТВЕТ И НАЧИСЛИТЬ ОЧКИ!'}
+            : `<button id="btn-judge-case" ${cb.isJudging ? 'disabled' : ''} class="btn-tactile w-full py-3.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase">
+                ${cb.isJudging ? 'АНАЛИЗ ОТВЕТА НЕЙРОСЕТЬЮ...' : 'ВЫНЕСТИ ВЕРДИКТ И НАЧИСЛИТЬ ОЧКИ'}
               </button>`
         }
       </div>
@@ -2056,48 +2997,49 @@ class PartySyncApp {
     const sorted = [...this.state.players].sort((a, b) => b.score - a.score);
     const { devScore, mgrScore } = this.getTeamScores();
     const winningTeam =
-      devScore > mgrScore ? '💻 Программисты' : mgrScore > devScore ? '📊 Менеджеры' : '🤝 Боевая ничья!';
+      devScore > mgrScore ? 'DEV TEAM (ПРОГЕРЫ)' : mgrScore > devScore ? 'MGR TEAM (МЕНЕДЖЕРЫ)' : 'РАВНЫЙ СЧЁТ';
 
     return `
-      <div class="glass-card rounded-3xl p-8 max-w-3xl mx-auto text-center space-y-6 animate-pop">
-        <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 text-xs font-bold uppercase">
-          🏆 Финал Вечернего Синка
+      <div class="studio-panel p-8 max-w-3xl mx-auto space-y-6 reveal-stage">
+        <div class="border-b border-zinc-800 pb-4 flex items-center justify-between">
+          <div>
+            <div class="font-mono-code text-xs text-[#facc15] font-bold uppercase">FINAL STANDINGS</div>
+            <h2 class="font-display font-black text-2xl sm:text-3xl text-white mt-1">
+              ПОБЕДИТЕЛЬ: ${this.escapeHtml(sorted[0]?.name || '')}
+            </h2>
+          </div>
+          <div class="text-right font-mono-code text-xs">
+            <div class="text-zinc-400">КОМАНДНЫЙ ЗАЧЁТ:</div>
+            <div class="text-[#facc15] font-bold">${winningTeam} (${devScore} : ${mgrScore})</div>
+          </div>
         </div>
-        <h2 class="font-display font-extrabold text-3xl sm:text-4xl text-white">
-          Чемпион вечера: ${this.escapeHtml(sorted[0]?.name || '')}!
-        </h2>
-        <p class="text-sm text-slate-300">
-          Битва отделов: <strong class="text-indigo-300">💻 Прогеры (${devScore})</strong> vs <strong class="text-pink-300">📊 Менеджеры (${mgrScore})</strong> — Победа за: <strong>${winningTeam}</strong>
-        </p>
 
-        <div class="space-y-2.5 text-left max-w-xl mx-auto">
+        <div class="space-y-2">
           ${sorted
             .map(
               (p, i) => `
-            <div class="flex items-center justify-between p-3.5 rounded-2xl ${
-              i === 0
-                ? 'bg-gradient-to-r from-amber-500/25 to-indigo-500/20 border border-amber-400/50'
-                : 'bg-white/[0.04] border border-white/10'
+            <div class="flex items-center justify-between p-4 border ${
+              i === 0 ? 'bg-[#18181c] border-2 border-[#facc15]' : 'bg-[#121215] border-zinc-800'
             }">
               <div class="flex items-center gap-3">
-                <span class="font-mono-code font-bold text-lg w-7 text-center">${
-                  i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
-                }</span>
+                <span class="font-mono-code font-extrabold text-sm w-8 text-center ${
+                  i === 0 ? 'text-[#facc15]' : 'text-zinc-500'
+                }">#0${i + 1}</span>
                 <div>
                   <div class="font-bold text-white">${this.escapeHtml(p.name)}</div>
-                  <div class="text-xs text-slate-400">${p.role === 'dev' ? '💻 Прогер' : '📊 Менеджер'}</div>
+                  <div class="font-mono-code text-[10px] text-zinc-400">${p.role.toUpperCase()}</div>
                 </div>
               </div>
-              <div class="font-mono-code font-extrabold text-xl text-emerald-400">${p.score} очков</div>
+              <div class="font-mono-code font-extrabold text-xl text-emerald-400">${p.score} PTS</div>
             </div>
           `
             )
             .join('')}
         </div>
 
-        <div class="pt-4 flex justify-center gap-3">
-          <button id="btn-restart-lobby" class="px-6 py-3 rounded-2xl bg-gradient-to-r from-indigo-500 to-pink-500 text-white font-display font-bold text-sm">
-            🔄 Сыграть ещё партию
+        <div class="pt-4 flex justify-end">
+          <button id="btn-restart-lobby" class="btn-tactile px-6 py-3.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase">
+            ВЕРНУТЬСЯ В ЛОББИ
           </button>
         </div>
       </div>
@@ -2107,64 +3049,59 @@ class PartySyncApp {
   renderAiSettingsModal() {
     const cfg = aiClient.config;
     return `
-      <div id="ai-modal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
-        <div class="glass-card rounded-3xl max-w-xl w-full p-6 space-y-5 border border-white/15 animate-pop">
-          <div class="flex items-center justify-between">
-            <h3 class="font-display font-bold text-lg text-white flex items-center gap-2">
-              <i data-lucide="sparkles" class="w-5 h-5 text-fuchsia-400"></i>
-              Настройки Yandex Cloud AI (Приватно)
-            </h3>
-            <button id="btn-close-ai" class="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white">
+      <div id="ai-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div class="studio-panel max-w-xl w-full p-6 space-y-5 border-2 border-zinc-700 reveal-stage">
+          <div class="flex items-center justify-between pb-3 border-b border-zinc-800">
+            <div>
+              <div class="font-mono-code text-[10px] text-[#facc15] uppercase">PRIVATE CREDENTIALS</div>
+              <h3 class="font-display font-bold text-base text-white">Настройки Yandex Cloud API</h3>
+            </div>
+            <button id="btn-close-ai" class="p-1.5 bg-zinc-900 border border-zinc-700 text-zinc-400 hover:text-white">
               <i data-lucide="x" class="w-4 h-4"></i>
             </button>
           </div>
 
-          <div class="p-3.5 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 text-xs text-slate-300 leading-relaxed">
-            🔒 <strong>Безопасность на GitHub Pages:</strong> Ваш API-ключ и Folder ID сохраняются <strong>только в localStorage вашего браузера</strong> и никогда не попадают в код репозитория.
-            <div class="mt-1.5 text-slate-400">
-              💡 Чтобы обойти CORS браузера при вызове Yandex Cloud с <code>github.io</code>, запустите локально в терминале скрипт из корня репо: <code>node yandex-bridge.mjs</code>
-            </div>
+          <div class="p-3.5 bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 font-mono-code leading-relaxed">
+            Ключ сохраняется исключительно в <code>localStorage</code> вашего браузера (в GitHub ничего не передаётся).
+            Для обхода браузерного CORS при работе с <code>github.io</code> запустите локально: <code>node yandex-bridge.mjs</code>
           </div>
 
           <div class="space-y-3">
             <div>
-              <label class="block text-xs font-semibold text-slate-300 mb-1">Yandex Cloud API-Key (или IAM-токен):</label>
-              <input id="yc-api-key" type="password" value="${this.escapeHtml(cfg.apiKey)}" placeholder="AQVN..." class="w-full rounded-xl bg-black/40 border border-white/15 px-3.5 py-2 text-sm text-white focus:border-indigo-400 focus:outline-none" />
+              <label class="block font-mono-code text-xs text-zinc-400 mb-1">API-KEY (ИЛИ IAM-ТОКЕН):</label>
+              <input id="yc-api-key" type="password" value="${this.escapeHtml(cfg.apiKey)}" placeholder="AQVN..." class="w-full bg-[#18181c] border border-zinc-700 px-3.5 py-2 text-sm text-white font-mono-code focus:border-[#facc15] focus:outline-none" />
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label class="block text-xs font-semibold text-slate-300 mb-1">Folder ID (Каталог в облаке):</label>
-                <input id="yc-folder-id" type="text" value="${this.escapeHtml(cfg.folderId)}" placeholder="b1g..." class="w-full rounded-xl bg-black/40 border border-white/15 px-3.5 py-2 text-sm text-white focus:border-indigo-400 focus:outline-none" />
+                <label class="block font-mono-code text-xs text-zinc-400 mb-1">FOLDER ID:</label>
+                <input id="yc-folder-id" type="text" value="${this.escapeHtml(cfg.folderId)}" placeholder="b1g..." class="w-full bg-[#18181c] border border-zinc-700 px-3.5 py-2 text-sm text-white font-mono-code focus:border-[#facc15] focus:outline-none" />
               </div>
               <div>
-                <label class="block text-xs font-semibold text-slate-300 mb-1">Модель:</label>
-                <select id="yc-model" class="w-full rounded-xl bg-black/60 border border-white/15 px-3 py-2 text-sm text-white focus:border-indigo-400 focus:outline-none">
-                  <option value="yandexgpt/latest" ${cfg.model === 'yandexgpt/latest' ? 'selected' : ''}>YandexGPT Pro (latest)</option>
-                  <option value="yandexgpt-lite/latest" ${cfg.model === 'yandexgpt-lite/latest' ? 'selected' : ''}>YandexGPT Lite (быстрая)</option>
+                <label class="block font-mono-code text-xs text-zinc-400 mb-1">МОДЕЛЬ:</label>
+                <select id="yc-model" class="w-full bg-[#18181c] border border-zinc-700 px-3 py-2 text-sm text-white font-mono-code focus:border-[#facc15] focus:outline-none">
+                  <option value="yandexgpt/latest" ${cfg.model === 'yandexgpt/latest' ? 'selected' : ''}>yandexgpt/latest</option>
+                  <option value="yandexgpt-lite/latest" ${cfg.model === 'yandexgpt-lite/latest' ? 'selected' : ''}>yandexgpt-lite/latest</option>
                 </select>
               </div>
             </div>
             <div>
-              <label class="block text-xs font-semibold text-slate-300 mb-1">Кастомный прокси / Worker URL (опционально):</label>
-              <input id="yc-custom-ep" type="text" value="${this.escapeHtml(cfg.customEndpoint || '')}" placeholder="По умолчанию используется локальный мост http://127.0.0.1:31337 или прямой API" class="w-full rounded-xl bg-black/40 border border-white/15 px-3.5 py-2 text-xs text-white focus:border-indigo-400 focus:outline-none" />
+              <label class="block font-mono-code text-xs text-zinc-400 mb-1">CUSTOM PROXY / WORKER URL (ОПЦИОНАЛЬНО):</label>
+              <input id="yc-custom-ep" type="text" value="${this.escapeHtml(cfg.customEndpoint || '')}" placeholder="По умолчанию http://127.0.0.1:31337/v1/chat/completions" class="w-full bg-[#18181c] border border-zinc-700 px-3.5 py-2 text-xs text-white font-mono-code focus:border-[#facc15] focus:outline-none" />
             </div>
           </div>
 
-          <div class="flex items-center gap-2">
-            <button id="btn-save-ai" class="flex-1 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-semibold text-xs transition">
-              💾 Сохранить и проверить связь
-            </button>
-          </div>
+          <button id="btn-save-ai" class="btn-tactile w-full py-2.5 bg-[#facc15] text-black font-mono-code font-extrabold text-xs uppercase">
+            СОХРАНИТЬ И ПРОВЕРИТЬ СОЕДИНЕНИЕ
+          </button>
 
-          <!-- Генератор свежих вопросов от YandexGPT на любую тему -->
-          <div class="pt-4 border-t border-white/10 space-y-2.5">
-            <label class="block text-xs font-bold text-fuchsia-300">
-              ✨ Сгенерировать свежий пак вопросов через YandexGPT прямо в игру:
+          <div class="pt-4 border-t border-zinc-800 space-y-2">
+            <label class="block font-mono-code text-xs text-zinc-300 font-bold">
+              СГЕНЕРИРОВАТЬ +5 ВОПРОСОВ ПО ЛЮБОЙ ТЕМЕ В КОЛОДУ:
             </label>
             <div class="flex gap-2">
-              <input id="ai-topic-input" type="text" placeholder="Например: фильмы Тарантино, CS2, факапы на работе..." class="flex-1 rounded-xl bg-black/40 border border-white/15 px-3.5 py-2 text-xs text-white focus:border-fuchsia-400 focus:outline-none" />
-              <button id="btn-gen-ai-pack" class="px-4 py-2 rounded-xl bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white font-bold text-xs shrink-0">
-                +5 вопросов
+              <input id="ai-topic-input" type="text" placeholder="Тема: архитектура, кино, видеоигры..." class="flex-1 bg-[#18181c] border border-zinc-700 px-3.5 py-2 text-xs text-white focus:border-[#facc15] focus:outline-none" />
+              <button id="btn-gen-ai-pack" class="btn-tactile px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-[#facc15] font-mono-code font-bold text-xs shrink-0">
+                ГЕНЕРИРОВАТЬ
               </button>
             </div>
           </div>
@@ -2175,27 +3112,22 @@ class PartySyncApp {
     `;
   }
 
-  // --- ЭКРАН МОБИЛЬНОГО ПУЛЬТА ИГРОКА (P2P CLIENT VIEW) ---
+  // --- МОБИЛЬНЫЙ / ВТОРОЙ ЭКРАН ПУЛЬТА ИГРОКА (P2P CLIENT VIEW) ---
   renderClientControllerView() {
     if (!this.hostSyncedState) {
       return `
         <div class="min-h-screen flex items-center justify-center p-4">
-          <div class="glass-card rounded-3xl max-w-md w-full p-6 space-y-4">
-            <div class="text-center">
-              <div class="inline-flex px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-mono-code mb-2">
-                КОМНАТА: ${this.escapeHtml(this.clientRoomCode)}
-              </div>
-              <h2 class="font-display font-bold text-2xl text-white">Пульт игрока</h2>
-              <p class="text-xs text-slate-400 mt-1">Подключитесь к экрану ведущего в Discord без регистрации</p>
-            </div>
+          <div class="studio-panel max-w-md w-full p-6 space-y-4">
+            <div class="font-mono-code text-xs text-[#facc15]">ROOM CODE // ${this.escapeHtml(this.clientRoomCode)}</div>
+            <h2 class="font-display font-bold text-xl text-white">Подключение пульта</h2>
             <div class="space-y-3">
-              <input id="client-name-input" type="text" placeholder="Ваше имя (например, Алекс)" class="w-full rounded-xl bg-black/40 border border-white/15 px-4 py-3 text-sm text-white" />
-              <select id="client-role-input" class="w-full rounded-xl bg-black/60 border border-white/15 px-4 py-3 text-sm text-white">
-                <option value="dev">💻 Программист</option>
-                <option value="mgr">📊 Менеджер</option>
+              <input id="client-name-input" type="text" placeholder="Ваше имя (как в таблице)" class="w-full bg-[#18181c] border border-zinc-700 px-4 py-3 text-sm text-white" />
+              <select id="client-role-input" class="w-full bg-[#18181c] border border-zinc-700 px-4 py-3 text-sm text-white font-mono-code">
+                <option value="dev">DEV (Программист)</option>
+                <option value="mgr">MGR (Менеджер)</option>
               </select>
-              <button id="btn-client-join" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-500 to-pink-500 text-white font-display font-bold text-sm">
-                🚀 Войти в игру
+              <button id="btn-client-join" class="btn-tactile w-full py-3.5 bg-[#facc15] text-black font-display font-extrabold text-xs uppercase">
+                ПОДКЛЮЧИТЬСЯ К СТОЛУ
               </button>
             </div>
           </div>
@@ -2204,46 +3136,61 @@ class PartySyncApp {
     }
 
     const hs = this.hostSyncedState;
-    const me = hs.players?.find((p) => p.peerId === this.p2p.peer?.id) || hs.players?.[0];
+    const me =
+      hs.players?.find((p) => p.peerId === this.p2p.peer?.id) ||
+      hs.players?.find((p) => p.id === this.clientSelectedPlayerId) ||
+      hs.players?.[0];
     const isMyTurn = me && hs.activePlayerId === me.id;
 
     return `
       <div class="min-h-screen max-w-md mx-auto p-4 flex flex-col gap-4">
-        <div class="glass-card rounded-2xl p-4 flex items-center justify-between">
+        <div class="studio-panel p-4 flex items-center justify-between">
           <div>
-            <div class="text-xs text-slate-400">Вы играете как:</div>
-            <div class="font-bold text-base text-white">${me ? this.escapeHtml(me.name) : 'Участник'}</div>
+            <div class="font-mono-code text-[10px] text-zinc-400">ИГРОК:</div>
+            <select id="client-switch-slot" class="bg-transparent font-bold text-base text-white focus:outline-none">
+              ${(hs.players || [])
+                .map(
+                  (p) => `<option value="${p.id}" class="bg-zinc-900" ${me?.id === p.id ? 'selected' : ''}>${this.escapeHtml(p.name)}</option>`
+                )
+                .join('')}
+            </select>
           </div>
-          <div class="text-right">
-            <div class="text-xs text-slate-400">Очки:</div>
-            <div class="font-mono-code font-bold text-xl text-emerald-400">${me ? me.score : 0}</div>
+          <div class="text-right font-mono-code">
+            <div class="text-[10px] text-zinc-400">СЧЁТ:</div>
+            <div class="font-extrabold text-xl text-emerald-400">${me ? me.score : 0} PTS</div>
           </div>
         </div>
 
         ${
           hs.currentAct === 'quiz' && hs.quiz
             ? `
-          <div class="glass-card rounded-3xl p-5 space-y-4">
-            <div class="text-xs font-bold uppercase ${isMyTurn ? 'text-emerald-400' : 'text-indigo-300'}">
-              ${isMyTurn ? '🔥 СЕЙЧАС ВАШ ХОД! Выберите ответ:' : 'Ставка зрителя и голосование зала:'}
+          <div class="studio-panel p-5 space-y-4">
+            <div class="font-mono-code text-xs font-extrabold uppercase ${isMyTurn ? 'text-[#facc15]' : 'text-zinc-400'}">
+              ${
+                hs.quiz.eventType === 'all_play'
+                  ? 'ОБЩИЙ ШТУРМ: ВЫБЕРИТЕ ВАШ ОТВЕТ'
+                  : isMyTurn
+                  ? 'ВАШ ХОД: ВЫБЕРИТЕ ВАРИАНТ ОТВЕТА'
+                  : 'ХОД КОЛЛЕГИ: СДЕЛАЙТЕ СТАВКУ ИЛИ ПРОГОЛОСУЙТЕ В ОПРОСЕ'
+              }
             </div>
             <div class="text-sm font-semibold text-white">${this.escapeHtml(hs.quiz.question)}</div>
-            <div class="grid grid-cols-1 gap-2.5">
-              ${hs.quiz.options
+            <div class="grid grid-cols-1 gap-2">
+              ${(hs.quiz.options || [])
                 .map(
                   (opt, idx) => `
-                <button data-client-quiz-opt="${idx}" class="p-3.5 rounded-xl bg-white/10 hover:bg-indigo-500/30 border border-white/15 text-left text-sm font-semibold text-white">
-                  <strong>${['A', 'B', 'C', 'D'][idx]}.</strong> ${this.escapeHtml(opt)}
+                <button data-client-quiz-opt="${idx}" class="p-3.5 bg-[#18181c] hover:bg-zinc-800 border border-zinc-700 text-left text-xs font-semibold text-white">
+                  <strong class="text-[#facc15] font-mono-code mr-2">[${['A', 'B', 'C', 'D'][idx]}]</strong> ${this.escapeHtml(opt)}
                 </button>
               `
                 )
                 .join('')}
             </div>
             ${
-              !isMyTurn
-                ? `<div class="pt-3 border-t border-white/10 flex gap-2">
-                    <button data-client-bet="pass" class="flex-1 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 text-xs font-bold">👍 Ответит верно</button>
-                    <button data-client-bet="fail" class="flex-1 py-2.5 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs font-bold">💀 Засыпется</button>
+              !isMyTurn && !hs.quiz.betsLocked && !hs.quiz.revealed
+                ? `<div class="pt-3 border-t border-zinc-800 grid grid-cols-2 gap-2">
+                    <button data-client-bet="pass" class="py-2.5 bg-emerald-950 border border-emerald-500 text-emerald-300 font-mono-code text-xs font-bold">ВЕРЮ (+100)</button>
+                    <button data-client-bet="fail" class="py-2.5 bg-rose-950 border border-rose-500 text-rose-300 font-mono-code text-xs font-bold">ФОЛ (+100)</button>
                   </div>`
                 : ''
             }
@@ -2255,19 +3202,19 @@ class PartySyncApp {
         ${
           hs.currentAct === 'bluff' && hs.bluff
             ? `
-          <div class="glass-card rounded-3xl p-5 space-y-4">
+          <div class="studio-panel p-5 space-y-4">
             <div class="text-sm font-semibold text-white">${this.escapeHtml(hs.bluff.prompt)}</div>
             ${
               hs.bluff.phase === 'collect'
                 ? `<div class="space-y-2">
-                    <input id="client-bluff-text" type="text" placeholder="Ваш правдоподобный блеф..." class="w-full rounded-xl bg-black/40 border border-white/15 px-3.5 py-2.5 text-sm text-white" />
-                    <button id="btn-client-send-bluff" class="w-full py-3 rounded-xl bg-pink-500 text-white font-bold text-xs">Отправить блеф</button>
+                    <input id="client-bluff-text" type="text" placeholder="Впишите правдоподобную ложь..." class="w-full bg-[#18181c] border border-zinc-700 px-3.5 py-2.5 text-sm text-white" />
+                    <button id="btn-client-send-bluff" class="btn-tactile w-full py-3 bg-[#facc15] text-black font-mono-code font-extrabold text-xs">ОТПРАВИТЬ БЛЕФ</button>
                   </div>`
                 : `<div class="space-y-2">
                     ${hs.bluff.choices
                       .map(
                         (c) => `
-                      <button data-client-bluff-vote="${c.id}" class="w-full p-3 rounded-xl bg-white/10 border border-white/15 text-left text-xs font-bold text-white">
+                      <button data-client-bluff-vote="${c.id}" class="w-full p-3 bg-[#18181c] border border-zinc-700 text-left text-xs font-bold text-white">
                         ${this.escapeHtml(c.text)}
                       </button>
                     `
@@ -2283,18 +3230,18 @@ class PartySyncApp {
         ${
           hs.currentAct === 'wavelength' && hs.wavelength
             ? `
-          <div class="glass-card rounded-3xl p-5 space-y-4 text-center">
-            <div class="text-xs text-slate-300">${this.escapeHtml(hs.wavelength.left)} ◄───► ${this.escapeHtml(
+          <div class="studio-panel p-5 space-y-4 text-center">
+            <div class="font-mono-code text-xs text-zinc-300">${this.escapeHtml(hs.wavelength.left)} ◄───► ${this.escapeHtml(
                 hs.wavelength.right
               )}</div>
             ${
               isMyTurn
-                ? `<div class="p-4 rounded-2xl bg-amber-500/20 border border-amber-400 text-amber-200 font-bold text-lg">
-                    🎯 Вы Телепат! Ваша секретная мишень: ${hs.wavelength.targetValue}%
+                ? `<div class="p-4 bg-zinc-900 border-2 border-[#facc15] text-[#facc15] font-mono-code font-extrabold text-lg">
+                    ВАША СЕКРЕТНАЯ МИШЕНЬ: ${hs.wavelength.targetValue}%
                   </div>`
-                : `<div class="flex gap-2">
-                    <button data-client-wave="left" class="flex-1 py-3 rounded-xl bg-indigo-500/20 border border-indigo-400 text-xs font-bold">◄ Мишень левее</button>
-                    <button data-client-wave="right" class="flex-1 py-3 rounded-xl bg-emerald-500/20 border border-emerald-400 text-xs font-bold">Мишень правее ►</button>
+                : `<div class="grid grid-cols-2 gap-2">
+                    <button data-client-wave="left" class="py-3 bg-blue-950 border border-blue-500 font-mono-code text-xs font-bold text-blue-200">◄ МИШЕНЬ ЛЕВЕЕ</button>
+                    <button data-client-wave="right" class="py-3 bg-emerald-950 border border-emerald-500 font-mono-code text-xs font-bold text-emerald-200">МИШЕНЬ ПРАВЕЕ ►</button>
                   </div>`
             }
           </div>
@@ -2308,6 +3255,7 @@ class PartySyncApp {
   // --- ПРИВЯЗКА СОБЫТИЙ DOM ---
   bindHostEvents() {
     document.getElementById('btn-home-logo')?.addEventListener('click', () => {
+      this.stopTimer();
       this.state.screen = 'lobby';
       this.render();
     });
@@ -2328,7 +3276,7 @@ class PartySyncApp {
       if (url && navigator.clipboard) {
         navigator.clipboard.writeText(url);
         sfx.play('joker');
-        alert(`Ссылка на комнату скопирована в буфер обмена!\nСкиньте её коллегам в чат Discord:\n${url}`);
+        this.showToast(`Ссылка на пульты скопирована: ${url}`);
       }
     });
 
@@ -2371,7 +3319,11 @@ class PartySyncApp {
 
     document.getElementById('btn-add-player')?.addEventListener('click', () => {
       sfx.play('click');
-      const role = this.state.players.filter((p) => p.role === 'dev').length <= this.state.players.filter((p) => p.role === 'mgr').length ? 'dev' : 'mgr';
+      const role =
+        this.state.players.filter((p) => p.role === 'dev').length <=
+        this.state.players.filter((p) => p.role === 'mgr').length
+          ? 'dev'
+          : 'mgr';
       this.state.players.push({
         id: `p_${Date.now()}`,
         name: `Игрок ${this.state.players.length + 1}`,
@@ -2388,6 +3340,7 @@ class PartySyncApp {
     document.querySelectorAll('[data-set-turns]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         this.state.totalTurnsTarget = Number(e.currentTarget.getAttribute('data-set-turns'));
+        this.state.boardSchedule = this.buildBoardSchedule(this.state.totalTurnsTarget, this.state.gameMode);
         sfx.play('click');
         this.saveState();
         this.render();
@@ -2398,25 +3351,21 @@ class PartySyncApp {
       card.addEventListener('click', (e) => {
         const mode = e.currentTarget.getAttribute('data-select-mode');
         this.state.gameMode = mode;
-        this.state.currentAct = mode === 'show' ? 'quiz' : mode;
+        this.state.boardSchedule = this.buildBoardSchedule(this.state.totalTurnsTarget, mode);
         sfx.play('click');
         this.saveState();
         this.render();
       });
     });
 
-    document.getElementById('btn-start-game')?.addEventListener('click', () => {
-      this.state.currentAct = this.state.gameMode === 'show' ? 'quiz' : this.state.gameMode;
-      this.startNewGame();
-    });
-
+    document.getElementById('btn-start-game')?.addEventListener('click', () => this.startNewGame());
     document.getElementById('btn-resume-game')?.addEventListener('click', () => {
       sfx.play('click');
       this.state.screen = 'game';
       this.render();
     });
 
-    // Игровой экран
+    // Табло игроков и навигация
     document.querySelectorAll('[data-make-active]').forEach((el) => {
       el.addEventListener('click', (e) => {
         if (e.target.closest('[data-score-minus]') || e.target.closest('[data-score-plus]')) return;
@@ -2443,7 +3392,7 @@ class PartySyncApp {
 
     document.querySelectorAll('[data-switch-act]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
-        this.switchAct(e.currentTarget.getAttribute('data-switch-act'));
+        this.switchActManual(e.currentTarget.getAttribute('data-switch-act'));
       });
     });
 
@@ -2459,7 +3408,7 @@ class PartySyncApp {
       this.render();
     });
 
-    // Квиз
+    // Квиз и Джокеры
     document.querySelectorAll('[data-quiz-option]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         const idx = Number(e.currentTarget.getAttribute('data-quiz-option'));
@@ -2469,9 +3418,19 @@ class PartySyncApp {
 
     document.querySelectorAll('[data-use-joker]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
-        const jid = e.currentTarget.getAttribute('data-use-joker');
-        this.useJoker(jid);
+        this.initiateJoker(e.currentTarget.getAttribute('data-use-joker'));
       });
+    });
+
+    document.querySelectorAll('[data-confirm-joker-target]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        this.confirmJokerTarget(e.currentTarget.getAttribute('data-confirm-joker-target'));
+      });
+    });
+
+    document.getElementById('btn-cancel-joker-target')?.addEventListener('click', () => {
+      this.state.quiz.pendingJokerTargetMode = null;
+      this.render();
     });
 
     document.querySelectorAll('[data-side-bet]').forEach((btn) => {
@@ -2481,10 +3440,57 @@ class PartySyncApp {
       });
     });
 
-    document.getElementById('btn-roll-event')?.addEventListener('click', () => this.triggerManualEvent());
+    document.querySelectorAll('[data-crowd-poll]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const [pid, idx] = e.currentTarget.getAttribute('data-crowd-poll').split(':');
+        sfx.play('click');
+        this.state.quiz.crowdVotes[pid] = Number(idx);
+        this.saveState();
+        this.render();
+      });
+    });
+
+    document.getElementById('select-manual-event')?.addEventListener('change', (e) => {
+      const evId = e.target.value;
+      if (evId) this.triggerManualEvent(evId);
+    });
+
     document.getElementById('btn-quiz-timer')?.addEventListener('click', () => this.toggleTimer());
-    document.getElementById('btn-box-safe')?.addEventListener('click', () => this.resolveMysteryBox(true));
-    document.getElementById('btn-box-risk')?.addEventListener('click', () => this.resolveMysteryBox(false));
+
+    // Ивенты в Квизе
+    document.querySelectorAll('[data-vault-pick]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        this.pickVaultBox(Number(e.currentTarget.getAttribute('data-vault-pick')));
+      });
+    });
+
+    document.querySelectorAll('[data-auction-bid]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const [pid, amt] = e.currentTarget.getAttribute('data-auction-bid').split(':');
+        this.placeAuctionBid(pid, Number(amt));
+      });
+    });
+
+    document.getElementById('btn-auction-lock')?.addEventListener('click', () => this.lockAuctionWinner());
+
+    document.querySelectorAll('[data-duel-opponent]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        this.selectDuelOpponent(e.currentTarget.getAttribute('data-duel-opponent'));
+      });
+    });
+
+    document.querySelectorAll('[data-duel-pick]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const [pid, idx] = e.currentTarget.getAttribute('data-duel-pick').split(':');
+        this.submitDuelAnswer(pid, Number(idx));
+      });
+    });
+
+    document.querySelectorAll('[data-dilemma-partner]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        this.selectDilemmaPartner(e.currentTarget.getAttribute('data-dilemma-partner'));
+      });
+    });
 
     document.querySelectorAll('[data-dilemma]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -2493,9 +3499,30 @@ class PartySyncApp {
       });
     });
 
+    document.querySelectorAll('[data-allplay-pick]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const [pid, idx] = e.currentTarget.getAttribute('data-allplay-pick').split(':');
+        this.submitAllPlayAnswer(pid, Number(idx));
+      });
+    });
+
+    document.querySelectorAll('[data-allplay-reset]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const pid = e.currentTarget.getAttribute('data-allplay-reset');
+        delete this.state.quiz.allPlayAnswers[pid];
+        this.render();
+      });
+    });
+
+    document.getElementById('btn-allplay-reveal')?.addEventListener('click', () => this.revealAllPlayOutcome());
     document.getElementById('btn-next-turn')?.addEventListener('click', () => this.nextTurn());
 
-    // Правдоруб (Fibbage)
+    // Правдоруб (Блеф)
+    document.getElementById('btn-toggle-bluff-mask')?.addEventListener('click', () => {
+      this.state.bluff.maskInputs = !this.state.bluff.maskInputs;
+      this.render();
+    });
+
     document.querySelectorAll('[data-bluff-input]').forEach((inp) => {
       inp.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -2511,6 +3538,14 @@ class PartySyncApp {
       });
     });
 
+    document.querySelectorAll('[data-bluff-clear]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const pid = e.currentTarget.getAttribute('data-bluff-clear');
+        delete this.state.bluff.submittedBluffs[pid];
+        this.render();
+      });
+    });
+
     document.getElementById('btn-bluff-start-vote')?.addEventListener('click', () => this.startBluffVoting(false));
     document.getElementById('btn-bluff-quick')?.addEventListener('click', () => this.startBluffVoting(true));
 
@@ -2523,7 +3558,10 @@ class PartySyncApp {
 
     document.getElementById('btn-bluff-reveal')?.addEventListener('click', () => this.revealBluffResults());
 
-    // На одной волне
+    // Спектр (Wavelength)
+    document.getElementById('btn-wavelength-copy')?.addEventListener('click', () =>
+      this.copyWavelengthTargetToClipboard()
+    );
     document.getElementById('btn-wavelength-peek')?.addEventListener('click', () => {
       sfx.play('click');
       this.state.wavelength.peekTarget = !this.state.wavelength.peekTarget;
@@ -2554,7 +3592,12 @@ class PartySyncApp {
     document.getElementById('btn-reroll-mutator')?.addEventListener('click', () => this.rerollMutator());
     document.getElementById('btn-voice-dictate')?.addEventListener('click', () => this.toggleVoiceDictation());
     document.getElementById('btn-judge-case')?.addEventListener('click', () => this.judgeCurrentCase());
-    document.getElementById('btn-case-like')?.addEventListener('click', () => this.addCasePeerLike());
+
+    document.querySelectorAll('[data-case-vote]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        this.toggleCasePeerVote(e.currentTarget.getAttribute('data-case-vote'));
+      });
+    });
   }
 
   bindClientEvents() {
@@ -2564,15 +3607,31 @@ class PartySyncApp {
       await this.p2p.joinRoom(this.clientRoomCode, { name, role });
     });
 
+    document.getElementById('client-switch-slot')?.addEventListener('change', (e) => {
+      this.clientSelectedPlayerId = e.target.value;
+      localStorage.setItem('sync50_client_pid', this.clientSelectedPlayerId);
+      this.render();
+    });
+
+    const getMyId = () => {
+      const hs = this.hostSyncedState;
+      const byPeer = hs?.players?.find((p) => p.peerId === this.p2p.peer?.id);
+      return byPeer?.id || this.clientSelectedPlayerId || hs?.players?.[0]?.id;
+    };
+
     document.querySelectorAll('[data-client-quiz-opt]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         const optionIndex = Number(e.currentTarget.getAttribute('data-client-quiz-opt'));
         const hs = this.hostSyncedState;
-        const me = hs?.players?.find((p) => p.peerId === this.p2p.peer?.id);
-        if (me && hs.activePlayerId === me.id) {
-          this.p2p.sendActionToHost({ kind: 'QUIZ_ANSWER', optionIndex });
+        const myId = getMyId();
+        if (
+          hs?.activePlayerId === myId ||
+          hs?.quiz?.eventType === 'all_play' ||
+          (hs?.quiz?.eventType === 'duel' && hs?.quiz?.duelOpponentId === myId)
+        ) {
+          this.p2p.sendActionToHost({ kind: 'QUIZ_ANSWER', playerId: myId, optionIndex });
         } else {
-          this.p2p.sendActionToHost({ kind: 'CROWD_VOTE', optionIndex });
+          this.p2p.sendActionToHost({ kind: 'CROWD_VOTE', playerId: myId, optionIndex });
         }
       });
     });
@@ -2580,26 +3639,26 @@ class PartySyncApp {
     document.querySelectorAll('[data-client-bet]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         const bet = e.currentTarget.getAttribute('data-client-bet');
-        this.p2p.sendActionToHost({ kind: 'SIDE_BET', bet });
+        this.p2p.sendActionToHost({ kind: 'SIDE_BET', playerId: getMyId(), bet });
       });
     });
 
     document.getElementById('btn-client-send-bluff')?.addEventListener('click', () => {
       const text = document.getElementById('client-bluff-text')?.value?.trim();
-      if (text) this.p2p.sendActionToHost({ kind: 'SUBMIT_BLUFF', text });
+      if (text) this.p2p.sendActionToHost({ kind: 'SUBMIT_BLUFF', playerId: getMyId(), text });
     });
 
     document.querySelectorAll('[data-client-bluff-vote]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         const choiceId = e.currentTarget.getAttribute('data-client-bluff-vote');
-        this.p2p.sendActionToHost({ kind: 'VOTE_BLUFF', choiceId });
+        this.p2p.sendActionToHost({ kind: 'VOTE_BLUFF', playerId: getMyId(), choiceId });
       });
     });
 
     document.querySelectorAll('[data-client-wave]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         const dir = e.currentTarget.getAttribute('data-client-wave');
-        this.p2p.sendActionToHost({ kind: 'WAVELENGTH_SIDE', dir });
+        this.p2p.sendActionToHost({ kind: 'WAVELENGTH_SIDE', playerId: getMyId(), dir });
       });
     });
   }
