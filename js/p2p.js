@@ -1,23 +1,23 @@
-// Сверхнадёжный Multi-Broker Realtime Engine (одновременно держит связь через EMQX + HiveMQ + Mosquitto + BroadcastChannel)
-// С гарантированным подтверждением входа (Handshake Retry Loop) и дедупликацией пакетов.
-
+// Стабильный Multi-Broker Realtime Engine (QoS 1 + Fast Retry + Versioned State + Keepalive)
 const BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
   'wss://test.mosquitto.org:8081/mqtt'
 ];
 
-const TOPIC_PREFIX = 'psync_sup3dev_v7';
+const TOPIC_PREFIX = 'psync_sup3dev_v8';
 
 export class P2PRoomManager {
   constructor({ onPlayerJoin, onPlayerLeave, onPlayerAction, onHostStateUpdate, onStatusChange }) {
-    this.clients = []; // Подключаемся ко всем доступным брокерам параллельно!
+    this.clients = [];
     this.bc = null;
     this.roomCode = null;
     this.isHost = false;
-    this.lastStateJson = null;
+    this.lastStatePacket = null;
+    this.stateVersion = 1;
     this.seenPacketIds = new Set();
     this.joinRetryTimer = null;
+    this.hostSyncTimer = null;
 
     this.onPlayerJoin = onPlayerJoin;
     this.onPlayerLeave = onPlayerLeave;
@@ -43,6 +43,10 @@ export class P2PRoomManager {
     if (this.joinRetryTimer) {
       clearInterval(this.joinRetryTimer);
       this.joinRetryTimer = null;
+    }
+    if (this.hostSyncTimer) {
+      clearInterval(this.hostSyncTimer);
+      this.hostSyncTimer = null;
     }
     if (this.bc) {
       try {
@@ -74,11 +78,10 @@ export class P2PRoomManager {
   handleIncomingPacket(data) {
     if (!data || typeof data !== 'object') return;
 
-    // Дедупликация пакетов, пришедших одновременно через разные брокеры
-    if (data.pktId) {
+    if (data.pktId && data.type !== 'STATE') {
       if (this.seenPacketIds.has(data.pktId)) return;
       this.seenPacketIds.add(data.pktId);
-      if (this.seenPacketIds.size > 400) {
+      if (this.seenPacketIds.size > 500) {
         const first = this.seenPacketIds.values().next().value;
         this.seenPacketIds.delete(first);
       }
@@ -89,11 +92,11 @@ export class P2PRoomManager {
         this.onPlayerJoin?.(data.senderId, data.payload);
       } else if (data.type === 'ACTION') {
         this.onPlayerAction?.(data.senderId, data.payload);
-      } else if (data.type === 'PING_STATE' && this.lastStateJson) {
-        this.publishAll(`${TOPIC_PREFIX}/${this.roomCode}/state`, JSON.parse(this.lastStateJson), true);
+      } else if (data.type === 'PING_STATE' && this.lastStatePacket) {
+        this.publishAll(`${TOPIC_PREFIX}/${this.roomCode}/state`, this.lastStatePacket, true);
       }
     } else {
-      if (data.type === 'STATE') {
+      if (data.type === 'STATE' && data.payload) {
         this.onHostStateUpdate?.(data.payload);
       }
     }
@@ -113,7 +116,7 @@ export class P2PRoomManager {
     for (const c of this.clients) {
       if (c && c.connected) {
         try {
-          c.publish(topic, jsonStr, { qos: 0, retain });
+          c.publish(topic, jsonStr, { qos: 1, retain });
         } catch (e) {}
       }
     }
@@ -136,15 +139,15 @@ export class P2PRoomManager {
     const stateTopic = `${TOPIC_PREFIX}/${this.roomCode}/state`;
     let anyConnected = false;
 
-    // Подключаем Хоста ко всем брокерам параллельно!
     BROKERS.forEach((url, idx) => {
       try {
-        const clientId = `ps7_h_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+        const clientId = `ps8_h_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
         const client = window.mqtt.connect(url, {
           clientId,
           clean: true,
+          keepalive: 25,
           connectTimeout: 5000,
-          reconnectPeriod: 2500
+          reconnectPeriod: 2000
         });
 
         client.on('connect', () => {
@@ -152,9 +155,9 @@ export class P2PRoomManager {
             anyConnected = true;
             this.onStatusChange?.('ready', this.roomCode);
           }
-          client.subscribe(eventsTopic, { qos: 0 }, () => {
-            if (this.lastStateJson) {
-              client.publish(stateTopic, this.lastStateJson, { qos: 0, retain: true });
+          client.subscribe(eventsTopic, { qos: 1 }, () => {
+            if (this.lastStatePacket) {
+              client.publish(stateTopic, JSON.stringify(this.lastStatePacket), { qos: 1, retain: true });
             }
           });
         });
@@ -169,6 +172,13 @@ export class P2PRoomManager {
         this.clients.push(client);
       } catch (e) {}
     });
+
+    // Фоновая синхронизация каждые 3 секунды (если у кого-то на телефоне мигнула мобильная сеть, он догонит стейт без перезагрузки!)
+    this.hostSyncTimer = setInterval(() => {
+      if (this.lastStatePacket) {
+        this.publishAll(stateTopic, this.lastStatePacket, true);
+      }
+    }, 3000);
 
     return this.roomCode;
   }
@@ -189,6 +199,7 @@ export class P2PRoomManager {
         eventsTopic,
         {
           type: 'JOIN',
+          pktId: this.makePacketId(),
           senderId: this.senderId,
           payload: this.playerProfile
         },
@@ -196,13 +207,8 @@ export class P2PRoomManager {
       );
     };
 
-    // Отправляем сразу в BroadcastChannel
     sendJoinSignal();
-
-    // И запускаем авто-повтор JOIN каждые 1.2 секунды, пока Хост не пришлёт STATE с нашим игроком!
-    this.joinRetryTimer = setInterval(() => {
-      sendJoinSignal();
-    }, 1200);
+    this.joinRetryTimer = setInterval(sendJoinSignal, 1200);
 
     if (!window.mqtt) {
       this.onStatusChange?.('connected', this.roomCode);
@@ -219,23 +225,24 @@ export class P2PRoomManager {
       };
 
       const timeout = setTimeout(() => {
-        finish(false, 'Не удалось подключиться к сети. Проверьте интернет на телефоне.');
+        finish(false, 'Не удалось подключиться к сети. Проверьте интернет.');
       }, 6500);
 
       BROKERS.forEach((url, idx) => {
         try {
-          const clientId = `ps7_p_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+          const clientId = `ps8_p_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
           const client = window.mqtt.connect(url, {
             clientId,
             clean: true,
+            keepalive: 25,
             connectTimeout: 5000,
-            reconnectPeriod: 2500
+            reconnectPeriod: 2000
           });
 
           client.on('connect', () => {
             clearTimeout(timeout);
             this.onStatusChange?.('connected', this.roomCode);
-            client.subscribe(stateTopic, { qos: 0 }, () => {
+            client.subscribe(stateTopic, { qos: 1 }, () => {
               sendJoinSignal();
             });
             finish(true);
@@ -263,25 +270,30 @@ export class P2PRoomManager {
 
   broadcastState(statePayload) {
     if (!this.isHost || !this.roomCode) return;
+    this.stateVersion += 1;
     const packet = {
       type: 'STATE',
-      pktId: this.makePacketId(),
+      pktId: `st_${this.roomCode}_${this.stateVersion}`,
       payload: statePayload
     };
-    this.lastStateJson = JSON.stringify(packet);
+    this.lastStatePacket = packet;
     this.publishAll(`${TOPIC_PREFIX}/${this.roomCode}/state`, packet, true);
   }
 
   sendActionToHost(actionPayload) {
     if (this.isHost || !this.roomCode) return;
-    this.publishAll(
-      `${TOPIC_PREFIX}/${this.roomCode}/events`,
-      {
-        type: 'ACTION',
-        senderId: this.senderId,
-        payload: actionPayload
-      },
-      false
-    );
+    // Генерируем один и тот же pktId для основного пакета и его быстрого повтора через 220 мс (для 100% доставки на мобильной сети без дублей!)
+    const pktId = this.makePacketId();
+    const packet = {
+      type: 'ACTION',
+      pktId,
+      senderId: this.senderId,
+      payload: actionPayload
+    };
+    const topic = `${TOPIC_PREFIX}/${this.roomCode}/events`;
+    this.publishAll(topic, packet, false);
+    setTimeout(() => {
+      this.publishAll(topic, packet, false);
+    }, 220);
   }
 }

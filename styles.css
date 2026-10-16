@@ -70,7 +70,7 @@ body {
   border-bottom: 4px solid #a16207;
   border-radius: 14px;
   font-weight: 800;
-  transition: all 0.12s ease;
+  transition: background-color 0.12s ease, transform 0.12s ease;
 }
 
 .tactile-gold-btn:hover:not(:disabled) {
@@ -104,22 +104,12 @@ input[type="range"].intuition-slider::-webkit-slider-thumb {
   border: 3px solid #0b0d13;
   box-shadow: 0 4px 12px rgba(250, 204, 21, 0.45);
   cursor: pointer;
-  transition: transform 0.12s ease;
 }
 
-@keyframes stagePop {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.99);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
+/* Никакого дёргания карточек при каждом ререндере! */
 .stage-enter {
-  animation: stagePop 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 1;
+  transform: none;
 }
 
 @keyframes floatUpFade {

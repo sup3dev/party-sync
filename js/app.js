@@ -1,9 +1,9 @@
 // PARTY SYNC — Архитектура Stage (Экран Хоста с QR) + Controller (Личный пульт игрока)
 // Вдохновлено Jackbox, Kahoot, Doot Games и The Merkive
-import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=7';
-import { sfx } from './audio.js?v=7';
-import { aiClient } from './ai.js?v=7';
-import { P2PRoomManager } from './p2p.js?v=7';
+import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=8';
+import { sfx } from './audio.js?v=8';
+import { aiClient } from './ai.js?v=8';
+import { P2PRoomManager } from './p2p.js?v=8';
 
 const HOST_STORAGE_KEY = 'party_sync_host_v5';
 const CLIENT_TOKEN_KEY = 'party_sync_client_token_v5';
@@ -141,18 +141,18 @@ class PartySyncPlatform {
       if (status === 'ready') {
         this.broadcastToPlayers();
       }
-      this.render();
       return;
     }
     if (this.role === 'player') {
       if (status === 'error') {
         this.clientConnecting = false;
         this.clientError = info;
+        this.render();
       } else if (status === 'disconnected') {
         this.clientConnected = false;
         this.clientError = info;
+        this.render();
       }
-      this.render();
     }
   }
 
@@ -160,7 +160,6 @@ class PartySyncPlatform {
     if (this.role !== 'host') return;
 
     const cleanName = (profile.name || 'Игрок').trim().slice(0, 18);
-    // Ищем существующего игрока по токену или по имени (для автоматического восстановления при реконнекте!)
     let existing = this.state.players.find(
       (p) =>
         (profile.token && p.token === profile.token) ||
@@ -168,30 +167,41 @@ class PartySyncPlatform {
     );
 
     if (existing) {
+      const changed =
+        existing.name !== cleanName ||
+        (profile.color && existing.color !== profile.color) ||
+        !existing.online;
+
       existing.peerId = peerId;
       existing.online = true;
       existing.name = cleanName;
       if (profile.color) existing.color = profile.color;
       if (profile.token) existing.token = profile.token;
-    } else {
-      sfx.play('joker');
-      const colorObj =
-        PLAYER_COLORS.find((c) => c.id === profile.color) ||
-        PLAYER_COLORS[this.state.players.length % PLAYER_COLORS.length];
 
-      this.state.players.push({
-        id: `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
-        token: profile.token || null,
-        peerId,
-        online: true,
-        name: cleanName,
-        color: colorObj.id,
-        colorHex: colorObj.hex,
-        score: 0,
-        streak: 0,
-        jokers: { fifty: true, double: true, ally: true, pass: true, hint: true }
-      });
+      this.saveHostState();
+      if (changed) {
+        this.render();
+      }
+      return;
     }
+
+    sfx.play('joker');
+    const colorObj =
+      PLAYER_COLORS.find((c) => c.id === profile.color) ||
+      PLAYER_COLORS[this.state.players.length % PLAYER_COLORS.length];
+
+    this.state.players.push({
+      id: `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+      token: profile.token || null,
+      peerId,
+      online: true,
+      name: cleanName,
+      color: colorObj.id,
+      colorHex: colorObj.hex,
+      score: 0,
+      streak: 0,
+      jokers: { fifty: true, double: true, ally: true, pass: true, hint: true }
+    });
 
     this.saveHostState();
     this.render();
@@ -419,12 +429,19 @@ class PartySyncPlatform {
   }
 
   handleRemoteStateFromHost(st) {
+    const nextJson = JSON.stringify(st);
+    const isSame = this.lastRemoteJson === nextJson;
+    this.lastRemoteJson = nextJson;
     this.remoteState = st;
+
     const me = this.getClientPlayerObj();
     if (me) {
       this.p2p.stopJoinRetry();
     }
-    this.render();
+
+    if (!isSame) {
+      this.render();
+    }
   }
 
   getClientPlayerObj() {
