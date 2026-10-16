@@ -1,9 +1,9 @@
 // PARTY SYNC — Архитектура Stage (Экран Хоста с QR) + Controller (Личный пульт игрока)
 // Вдохновлено Jackbox, Kahoot, Doot Games и The Merkive
-import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=9';
-import { sfx } from './audio.js?v=9';
-import { aiClient } from './ai.js?v=9';
-import { P2PRoomManager } from './p2p.js?v=9';
+import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=10';
+import { sfx } from './audio.js?v=10';
+import { aiClient } from './ai.js?v=10';
+import { P2PRoomManager } from './p2p.js?v=10';
 
 const HOST_STORAGE_KEY = 'party_sync_host_v5';
 const CLIENT_TOKEN_KEY = 'party_sync_client_token_v5';
