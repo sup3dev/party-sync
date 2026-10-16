@@ -106,7 +106,12 @@ class PartySyncPlatform {
   async becomeHost() {
     sfx.play('click');
     this.role = 'host';
+    if (!this.state.roomCode) {
+      this.state.roomCode = this.p2p.generateRoomCode();
+    }
+    this.hostNetStatus = 'connecting';
     this.render();
+
     const code = await this.p2p.initHost(this.state.roomCode);
     if (code) {
       this.state.roomCode = code;
@@ -123,6 +128,14 @@ class PartySyncPlatform {
 
   // --- ПОДКЛЮЧЕНИЕ ИГРОКОВ К ХОСТУ (P2P) ---
   handleP2PStatus(status, info) {
+    if (this.role === 'host') {
+      this.hostNetStatus = status;
+      if (status === 'ready') {
+        this.broadcastToPlayers();
+      }
+      this.render();
+      return;
+    }
     if (this.role === 'player') {
       if (status === 'error') {
         this.clientConnecting = false;
@@ -398,20 +411,7 @@ class PartySyncPlatform {
   }
 
   handleRemoteStateFromHost(st) {
-    const prevActive = this.remoteState?.activePlayerId;
-    const prevStep = this.remoteState?.currentTurn?.step;
     this.remoteState = st;
-
-    // Вибрация на телефоне, когда наступил твой ход!
-    const me = this.getClientPlayerObj();
-    if (me && st.activePlayerId === me.id && (prevActive !== me.id || prevStep !== st.currentTurn?.step)) {
-      if (navigator.vibrate) {
-        try {
-          navigator.vibrate(120);
-        } catch (e) {}
-      }
-    }
-
     this.render();
   }
 
@@ -1835,7 +1835,7 @@ class PartySyncPlatform {
   // ==========================================
   renderPlayerController() {
     // Шаг А: Если ещё не подключился к комнате — экран ввода кода комнаты, имени и цвета
-    if (!this.clientConnected || !this.remoteState) {
+    if (!this.clientConnected) {
       return `
         <div class="min-h-screen flex items-center justify-center p-4">
           <div class="game-stage-card max-w-md w-full p-6 sm:p-8 space-y-6 stage-enter">
@@ -1914,7 +1914,7 @@ class PartySyncPlatform {
     }
 
     // Шаг Б: Игрок подключён!
-    const rs = this.remoteState;
+    const rs = this.remoteState || { screen: 'lobby', roomCode: this.clientRoomInput, players: [] };
     const me = this.getClientPlayerObj();
     const isMyTurn = me && rs.activePlayerId === me.id;
     const ct = rs.currentTurn;
