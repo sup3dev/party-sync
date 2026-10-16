@@ -1,9 +1,9 @@
 // PARTY SYNC — Архитектура Stage (Экран Хоста с QR) + Controller (Личный пульт игрока)
 // Вдохновлено Jackbox, Kahoot, Doot Games и The Merkive
-import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=8';
-import { sfx } from './audio.js?v=8';
-import { aiClient } from './ai.js?v=8';
-import { P2PRoomManager } from './p2p.js?v=8';
+import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=9';
+import { sfx } from './audio.js?v=9';
+import { aiClient } from './ai.js?v=9';
+import { P2PRoomManager } from './p2p.js?v=9';
 
 const HOST_STORAGE_KEY = 'party_sync_host_v5';
 const CLIENT_TOKEN_KEY = 'party_sync_client_token_v5';
@@ -529,9 +529,13 @@ class PartySyncPlatform {
     const q = this.prepareQuestionInstance(rawPicked);
 
     const isWheelTurn = this.state.turn % 4 === 0;
-    const evObj = isWheelTurn
-      ? WHEEL_EVENTS[(Math.floor(this.state.turn / 4) - 1) % WHEEL_EVENTS.length]
-      : null;
+    let evObj = null;
+    if (isWheelTurn) {
+      const prevEvId = this.lastWheelEventId || null;
+      const candidates = WHEEL_EVENTS.filter((e) => e.id !== prevEvId);
+      evObj = candidates[Math.floor(Math.random() * candidates.length)] || WHEEL_EVENTS[0];
+      this.lastWheelEventId = evObj.id;
+    }
 
     const boxes = [
       { label: 'Шкатулка №1', effect: 'plus300', title: '+300 очков' },
@@ -612,12 +616,30 @@ class PartySyncPlatform {
 
   proceedFromWheel() {
     const ct = this.state.currentTurn;
+    const player = this.getActivePlayer();
+    const evId = ct.eventObj?.id;
     sfx.play('click');
-    if (ct.eventObj?.id === 'steal') {
+
+    if (evId === 'gold_rush') {
+      ct.multiplier = 2;
+      ct.step = 'question';
+    } else if (evId === 'minefield') {
+      ct.multiplier = 2;
+      ct.usedDouble = true;
+      ct.step = 'question';
+    } else if (evId === 'free_joker') {
+      player.jokers = { fifty: true, double: true, ally: true, pass: true, hint: true };
+      player.score += 100;
+      sfx.play('joker');
+      ct.step = 'question';
+    } else if (evId === 'sniper') {
+      ct.extraLife = true;
+      ct.step = 'question';
+    } else if (evId === 'steal' || evId === 'robin_hood' || evId === 'chain') {
       ct.step = 'question';
     } else {
       ct.step = 'event_action';
-      if (ct.eventObj?.id === 'duel' && ct.question.type !== 'choice' && ct.question.type !== 'truth') {
+      if (evId === 'duel' && ct.question.type !== 'choice' && ct.question.type !== 'truth') {
         const choicePool = QUIZ_QUESTIONS.filter((q) => q.type === 'choice');
         ct.question = this.prepareQuestionInstance(choicePool[Math.floor(Math.random() * choicePool.length)]);
       }
@@ -861,6 +883,24 @@ class PartySyncPlatform {
           notes.push(`украдено 150 у лидера (${leader.name})`);
         }
       }
+      if (ct.eventObj?.id === 'robin_hood') {
+        const sorted = [...this.state.players].sort((a, b) => b.score - a.score);
+        const leader = sorted[0];
+        const last = sorted[sorted.length - 1];
+        if (leader && leader.id !== player.id) {
+          leader.score -= 200;
+          player.score += 100;
+          if (last) last.score += 100;
+          notes.push(`Робин Гуд: -200 у ${leader.name}, +100 тебе и +100 для ${last?.name}`);
+        }
+      }
+      if (ct.eventObj?.id === 'chain') {
+        const nextP = this.state.players[(this.state.activePlayerIdx + 1) % this.state.players.length];
+        if (nextP && nextP.id !== player.id) {
+          nextP.score += 150;
+          notes.push(`Цепная реакция: +150 для ${nextP.name}`);
+        }
+      }
       ct.outcomeDeltaText = notes.join(' · ');
       if (window.confetti) window.confetti({ particleCount: 50, spread: 60, origin: { y: 0.7 } });
     } else {
@@ -985,9 +1025,21 @@ class PartySyncPlatform {
       return;
     }
 
+    const isCorrect = optionIdx === q.answer;
+
+    // Если активен ивент «Право на ошибку (Снайпер)» и игрок промахнулся в первый раз — сжигаем неверный вариант и даём вторую попытку!
+    if (!isCorrect && ct.extraLife && q.type === 'choice') {
+      sfx.play('joker');
+      ct.extraLife = false;
+      ct.hiddenOptions.push(optionIdx);
+      ct.hintText = 'Сработала броня «Право на ошибку»! Этот вариант был неверным — выберите ещё раз.';
+      this.saveHostState();
+      this.render();
+      return;
+    }
+
     ct.selectedOption = optionIdx;
     ct.step = 'answered';
-    const isCorrect = optionIdx === q.answer;
     const pts = Math.round(q.points * ct.multiplier);
 
     if (isCorrect) {
@@ -1017,6 +1069,24 @@ class PartySyncPlatform {
           extraNotes.push(`украдено 150 у лидера (${leader.name})`);
         }
       }
+      if (ct.eventObj?.id === 'robin_hood') {
+        const sorted = [...this.state.players].sort((a, b) => b.score - a.score);
+        const leader = sorted[0];
+        const last = sorted[sorted.length - 1];
+        if (leader && leader.id !== player.id) {
+          leader.score -= 200;
+          player.score += 100;
+          if (last) last.score += 100;
+          extraNotes.push(`Робин Гуд: -200 у ${leader.name}, +100 тебе и +100 для ${last?.name}`);
+        }
+      }
+      if (ct.eventObj?.id === 'chain') {
+        const nextP = this.state.players[(this.state.activePlayerIdx + 1) % this.state.players.length];
+        if (nextP && nextP.id !== player.id) {
+          nextP.score += 150;
+          extraNotes.push(`Цепная реакция: +150 следующему игроку (${nextP.name})`);
+        }
+      }
 
       ct.outcomeTitle = 'Точно в цель!';
       ct.outcomeDeltaText = extraNotes.join(' · ');
@@ -1029,7 +1099,7 @@ class PartySyncPlatform {
       if (ct.usedDouble) {
         const penalty = Math.round(q.points / 2);
         player.score -= penalty;
-        ct.outcomeDeltaText = `Штраф за удвоение: -${penalty} очков`;
+        ct.outcomeDeltaText = `Штраф за повышенный риск: -${penalty} очков`;
       } else if (ct.passedFromId) {
         player.score -= 100;
         ct.outcomeDeltaText = `Штраф по переданному вопросу: -100 очков`;
