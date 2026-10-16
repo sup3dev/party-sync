@@ -35,7 +35,6 @@ body {
   font-family: 'JetBrains Mono', monospace;
 }
 
-/* Главная игровая карточка с приятным объёмом */
 .game-stage-card {
   background: var(--surface);
   border: 1.5px solid var(--border);
@@ -43,7 +42,6 @@ body {
   box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.65), 0 4px 0 0 #07080c;
 }
 
-/* Тактильные игровые кнопки с нижней гранью (3D press feel) */
 .tactile-option {
   background: var(--surface-2);
   border: 1.5px solid var(--border);
@@ -85,7 +83,6 @@ body {
   border-bottom-width: 2px;
 }
 
-/* Кастомный ползунок для вопросов на интуицию */
 input[type="range"].intuition-slider {
   -webkit-appearance: none;
   appearance: none;
@@ -110,10 +107,6 @@ input[type="range"].intuition-slider::-webkit-slider-thumb {
   transition: transform 0.12s ease;
 }
 
-input[type="range"].intuition-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.12);
-}
-
 @keyframes stagePop {
   from {
     opacity: 0;
@@ -127,4 +120,27 @@ input[type="range"].intuition-slider::-webkit-slider-thumb:hover {
 
 .stage-enter {
   animation: stagePop 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes floatUpFade {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.85);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  85% {
+    opacity: 1;
+    transform: translateY(-28px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-45px) scale(0.9);
+  }
+}
+
+.reaction-toast {
+  animation: floatUpFade 2.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }

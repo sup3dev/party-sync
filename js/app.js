@@ -1,45 +1,92 @@
-// Вечерняя игра на 6 человек в Discord — Чистый фокус + 4 типа раундов + Барабан событий
+// PARTY SYNC — Архитектура Stage (Экран Хоста с QR) + Controller (Личный пульт игрока)
+// Вдохновлено Jackbox, Kahoot, Doot Games и The Merkive
 import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js';
 import { sfx } from './audio.js';
 import { aiClient } from './ai.js';
+import { P2PRoomManager } from './p2p.js';
 
-const STORAGE_KEY = 'party_quiz_v4';
+const HOST_STORAGE_KEY = 'party_sync_host_v5';
+const CLIENT_TOKEN_KEY = 'party_sync_client_token_v5';
 
-const DEFAULT_PLAYERS = [
-  { id: 'p1', name: 'Алекс', score: 0, streak: 0, jokers: { fifty: true, double: true, ally: true, pass: true, hint: true } },
-  { id: 'p2', name: 'Игрок 2', score: 0, streak: 0, jokers: { fifty: true, double: true, ally: true, pass: true, hint: true } },
-  { id: 'p3', name: 'Игрок 3', score: 0, streak: 0, jokers: { fifty: true, double: true, ally: true, pass: true, hint: true } },
-  { id: 'p4', name: 'Игрок 4', score: 0, streak: 0, jokers: { fifty: true, double: true, ally: true, pass: true, hint: true } },
-  { id: 'p5', name: 'Игрок 5', score: 0, streak: 0, jokers: { fifty: true, double: true, ally: true, pass: true, hint: true } },
-  { id: 'p6', name: 'Игрок 6', score: 0, streak: 0, jokers: { fifty: true, double: true, ally: true, pass: true, hint: true } }
+const PLAYER_COLORS = [
+  { id: 'gold', hex: '#facc15', label: 'Золотой' },
+  { id: 'emerald', hex: '#10b981', label: 'Изумрудный' },
+  { id: 'rose', hex: '#f43f5e', label: 'Рубиновый' },
+  { id: 'blue', hex: '#3b82f6', label: 'Сапфировый' },
+  { id: 'purple', hex: '#a855f7', label: 'Аметистовый' },
+  { id: 'orange', hex: '#f97316', label: 'Янтарный' }
 ];
 
-class PartyQuizGame {
+class PartySyncPlatform {
   constructor() {
-    this.state = this.loadState() || this.createInitialState();
+    // Роль текущего окна: 'landing' (выбор роли) | 'host' (экран для Discord) | 'player' (пульт игрока)
+    this.role = 'landing';
     this.wheelSpinning = false;
+
+    // Данные клиента-игрока
+    this.clientToken = this.getOrCreateClientToken();
+    this.clientRoomInput = '';
+    this.clientNameInput = localStorage.getItem('ps_last_name') || '';
+    this.clientColorInput = localStorage.getItem('ps_last_color') || 'gold';
+    this.clientConnected = false;
+    this.clientConnecting = false;
+    this.clientError = null;
+    this.remoteState = null; // Стейт, пришедший от Хоста
+
+    // Состояние Хоста
+    this.state = this.loadHostState() || this.createInitialHostState();
+
+    this.p2p = new P2PRoomManager({
+      onPlayerJoin: (peerId, profile) => this.handlePeerJoin(peerId, profile),
+      onPlayerLeave: (peerId) => this.handlePeerLeave(peerId),
+      onPlayerAction: (peerId, action) => this.handlePeerAction(peerId, action),
+      onHostStateUpdate: (st) => this.handleRemoteStateFromHost(st),
+      onStatusChange: (status, info) => this.handleP2PStatus(status, info)
+    });
+
+    this.checkUrlParams();
     this.render();
   }
 
-  createInitialState() {
+  getOrCreateClientToken() {
+    let tok = localStorage.getItem(CLIENT_TOKEN_KEY);
+    if (!tok) {
+      tok = 'usr_' + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(CLIENT_TOKEN_KEY, tok);
+    }
+    return tok;
+  }
+
+  checkUrlParams() {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam && roomParam.trim().length >= 3) {
+      // Если открыли по QR-коду или ссылке с кодом комнаты — сразу включаем режим Игрока!
+      this.role = 'player';
+      this.clientRoomInput = roomParam.trim().toUpperCase();
+    }
+  }
+
+  createInitialHostState() {
     return {
       screen: 'lobby', // 'lobby' | 'play' | 'results'
+      roomCode: null,
       totalQuestions: 50,
       turn: 1,
       activePlayerIdx: 0,
-      players: JSON.parse(JSON.stringify(DEFAULT_PLAYERS)),
+      players: [], // Заполняются при входе по QR/коду + можно добавить с экрана Хоста
       usedIds: [],
       customQuestions: [],
       currentTurn: null
     };
   }
 
-  loadState() {
+  loadHostState() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(HOST_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.players) && parsed.players.length >= 2) {
+        if (parsed && Array.isArray(parsed.players)) {
           return parsed;
         }
       }
@@ -47,17 +94,345 @@ class PartyQuizGame {
     return null;
   }
 
-  saveState() {
+  saveHostState() {
+    if (this.role !== 'host') return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+      localStorage.setItem(HOST_STORAGE_KEY, JSON.stringify(this.state));
     } catch (e) {}
+    this.broadcastToPlayers();
   }
 
+  // --- ПЕРЕКЛЮЧЕНИЕ РОЛИ НА СТАРТОВОМ ЭКРАНЕ ---
+  async becomeHost() {
+    sfx.play('click');
+    this.role = 'host';
+    this.render();
+    const code = await this.p2p.initHost(this.state.roomCode);
+    if (code) {
+      this.state.roomCode = code;
+      this.saveHostState();
+      this.render();
+    }
+  }
+
+  becomePlayer() {
+    sfx.play('click');
+    this.role = 'player';
+    this.render();
+  }
+
+  // --- ПОДКЛЮЧЕНИЕ ИГРОКОВ К ХОСТУ (P2P) ---
+  handleP2PStatus(status, info) {
+    if (this.role === 'player') {
+      if (status === 'error') {
+        this.clientConnecting = false;
+        this.clientError = info;
+      } else if (status === 'disconnected') {
+        this.clientConnected = false;
+        this.clientError = info;
+      }
+      this.render();
+    }
+  }
+
+  handlePeerJoin(peerId, profile) {
+    if (this.role !== 'host') return;
+    sfx.play('joker');
+
+    const cleanName = (profile.name || 'Игрок').trim().slice(0, 18);
+    // Ищем существующего игрока по токену или по имени (для автоматического восстановления при реконнекте!)
+    let existing = this.state.players.find(
+      (p) =>
+        (profile.token && p.token === profile.token) ||
+        p.name.toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (existing) {
+      existing.peerId = peerId;
+      existing.online = true;
+      existing.name = cleanName;
+      if (profile.color) existing.color = profile.color;
+      if (profile.token) existing.token = profile.token;
+    } else {
+      const colorObj =
+        PLAYER_COLORS.find((c) => c.id === profile.color) ||
+        PLAYER_COLORS[this.state.players.length % PLAYER_COLORS.length];
+
+      this.state.players.push({
+        id: `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+        token: profile.token || null,
+        peerId,
+        online: true,
+        name: cleanName,
+        color: colorObj.id,
+        colorHex: colorObj.hex,
+        score: 0,
+        streak: 0,
+        jokers: { fifty: true, double: true, ally: true, pass: true, hint: true }
+      });
+    }
+
+    this.saveHostState();
+    this.render();
+  }
+
+  handlePeerLeave(peerId) {
+    if (this.role !== 'host') return;
+    const pl = this.state.players.find((p) => p.peerId === peerId);
+    if (pl) {
+      pl.online = false;
+      this.saveHostState();
+      this.render();
+    }
+  }
+
+  // Добавление локального игрока прямо на экране Хоста (если сам Хост тоже играет или кто-то без телефона)
+  addLocalPlayerOnHost(customName = '') {
+    sfx.play('click');
+    const idx = this.state.players.length + 1;
+    const colorObj = PLAYER_COLORS[(idx - 1) % PLAYER_COLORS.length];
+    this.state.players.push({
+      id: `local_${Date.now()}_${idx}`,
+      token: null,
+      peerId: null,
+      online: true,
+      isLocal: true,
+      name: customName.trim() || `Игрок ${idx}`,
+      color: colorObj.id,
+      colorHex: colorObj.hex,
+      score: 0,
+      streak: 0,
+      jokers: { fifty: true, double: true, ally: true, pass: true, hint: true }
+    });
+    this.saveHostState();
+    this.render();
+  }
+
+  // Приём команд с телефонов игроков!
+  handlePeerAction(peerId, action) {
+    if (this.role !== 'host') return;
+    const player = this.state.players.find((p) => p.peerId === peerId || p.token === action.token);
+    if (!player) return;
+
+    // 1. Живая реакция с телефона на главный экран в Discord!
+    if (action.kind === 'REACTION') {
+      this.spawnReactionOnHost(player.name, player.colorHex, action.emoji);
+      return;
+    }
+
+    const ct = this.state.currentTurn;
+    if (!ct) return;
+    const activePlayer = this.getActivePlayer();
+    const isActivePlayer = activePlayer && activePlayer.id === player.id;
+
+    // 2. Вращение барабана событий с телефона активного игрока
+    if (action.kind === 'SPIN_WHEEL' && isActivePlayer && ct.step === 'wheel') {
+      if (!ct.wheelSpun) this.spinEventWheel();
+      else this.proceedFromWheel();
+      return;
+    }
+
+    // 3. Действия в ивентах (Шкатулки, Перекуп, Дуэль, Сделка)
+    if (ct.step === 'event_action') {
+      if (action.kind === 'PICK_BOX' && isActivePlayer) {
+        this.pickBox(Number(action.boxIdx));
+      } else if (action.kind === 'PROCEED_QUESTION' && isActivePlayer) {
+        ct.step = 'question';
+        this.saveHostState();
+        this.render();
+      } else if (action.kind === 'AUCTION_TAKE') {
+        this.pickAuctionBuyer(player.id);
+      } else if (action.kind === 'DUEL_TARGET' && isActivePlayer) {
+        this.pickDuelOpponent(action.targetId);
+      } else if (action.kind === 'DILEMMA_TARGET' && isActivePlayer) {
+        this.pickDilemmaPartner(action.targetId);
+      } else if (action.kind === 'DILEMMA_ACT') {
+        // В дилемме сначала жмёт активный игрок, затем выбранный напарник
+        if (!ct.dilemmaFirstChoice && isActivePlayer) {
+          this.submitDilemmaChoice(action.choice);
+        } else if (ct.dilemmaFirstChoice && player.id === ct.dilemmaPartnerId) {
+          this.submitDilemmaChoice(action.choice);
+        }
+      }
+      return;
+    }
+
+    // 4. Ставки зрителей с телефонов (пока активный игрок думает над вопросом)
+    if (action.kind === 'SIDE_BET' && !isActivePlayer && ct.step === 'question' && !ct.betsLocked) {
+      sfx.play('click');
+      ct.sideBets[player.id] = action.bet; // 'pass' | 'fail'
+      this.saveHostState();
+      this.render();
+      return;
+    }
+
+    // 5. Использование Джокера с телефона активного игрока
+    if (action.kind === 'USE_JOKER' && isActivePlayer && ct.step === 'question') {
+      this.useJoker(action.jokerType);
+      return;
+    }
+    if (action.kind === 'JOKER_TARGET' && isActivePlayer && ct.step === 'question') {
+      this.confirmJokerTarget(action.targetId);
+      return;
+    }
+
+    // 6. Ответ на вопрос с телефона
+    if (action.kind === 'ANSWER_OPTION') {
+      // В социальном вопросе на шаге 'social_verify' отвечает тот коллега, про которого вопрос!
+      if (ct.question.type === 'social' && ct.step === 'social_verify') {
+        if (player.id === ct.question.socialTargetId) {
+          this.answerQuestion(Number(action.optionIdx));
+        }
+        return;
+      }
+      // В дуэли сначала отвечает активный игрок, а вторым — вызванный соперник!
+      if (ct.eventObj?.id === 'duel' && ct.duelOpponentId && ct.step === 'question') {
+        if (ct.duelFirstAnswer === null && isActivePlayer) {
+          this.answerQuestion(Number(action.optionIdx));
+        } else if (ct.duelFirstAnswer !== null && player.id === ct.duelOpponentId) {
+          this.answerQuestion(Number(action.optionIdx));
+        }
+        return;
+      }
+      // В обычном вопросе отвечает активный игрок
+      if (isActivePlayer && ct.step === 'question') {
+        this.answerQuestion(Number(action.optionIdx));
+      }
+      return;
+    }
+
+    // 7. Ползунок интуиции с телефона активного игрока
+    if (action.kind === 'SLIDER_SUBMIT' && isActivePlayer && ct.step === 'question') {
+      ct.sliderValue = Number(action.value);
+      this.submitSliderGuess();
+      return;
+    }
+
+    // 8. Переход к следующему ходу с телефона активного игрока
+    if (action.kind === 'NEXT_TURN' && isActivePlayer && ct.step === 'answered') {
+      this.nextTurn();
+    }
+  }
+
+  spawnReactionOnHost(playerName, colorHex, emoji) {
+    sfx.play('click');
+    const container = document.getElementById('host-reactions-layer');
+    if (!container) return;
+
+    const el = document.createElement('div');
+    const leftPct = Math.floor(Math.random() * 65) + 15;
+    el.className = 'reaction-toast fixed bottom-8 z-50 px-4 py-2 rounded-full bg-[#151923] border-2 shadow-xl flex items-center gap-2 pointer-events-none';
+    el.style.left = `${leftPct}%`;
+    el.style.borderColor = colorHex || '#facc15';
+    el.innerHTML = `<span class="text-xl">${this.escapeHtml(emoji)}</span><span class="text-xs font-bold text-white">${this.escapeHtml(playerName)}</span>`;
+    container.appendChild(el);
+    setTimeout(() => el.remove(), 2600);
+  }
+
+  // Синхронизация состояния Хоста на все подключённые телефоны
+  broadcastToPlayers() {
+    if (this.role !== 'host' || !this.p2p.roomCode) return;
+    const activePlayer = this.getActivePlayer();
+    const ct = this.state.currentTurn;
+
+    const payload = {
+      screen: this.state.screen,
+      roomCode: this.state.roomCode,
+      turn: this.state.turn,
+      totalQuestions: this.state.totalQuestions,
+      activePlayerId: activePlayer?.id || null,
+      activePlayerName: activePlayer?.name || '',
+      players: this.state.players.map((p) => ({
+        id: p.id,
+        token: p.token,
+        name: p.name,
+        color: p.color,
+        colorHex: p.colorHex,
+        score: p.score,
+        streak: p.streak,
+        jokers: p.jokers
+      })),
+      currentTurn: ct
+        ? {
+            step: ct.step,
+            wheelSpun: ct.wheelSpun,
+            eventObj: ct.eventObj,
+            multiplier: ct.multiplier,
+            usedHintOrFifty: ct.usedHintOrFifty,
+            hiddenOptions: ct.hiddenOptions,
+            hintText: ct.hintText,
+            allyPlayerId: ct.allyPlayerId,
+            selectingTargetFor: ct.selectingTargetFor,
+            betsLocked: ct.betsLocked,
+            sideBets: ct.sideBets,
+            boxes: ct.boxes.map((b) => ({ label: b.label })),
+            boxResultMsg: ct.boxResultMsg,
+            duelOpponentId: ct.duelOpponentId,
+            duelFirstAnswerDone: ct.duelFirstAnswer !== null,
+            dilemmaPartnerId: ct.dilemmaPartnerId,
+            dilemmaFirstChoiceDone: Boolean(ct.dilemmaFirstChoice),
+            dilemmaResultMsg: ct.dilemmaResultMsg,
+            sliderValue: ct.sliderValue,
+            isWin: ct.isWin,
+            outcomeTitle: ct.outcomeTitle,
+            outcomeDeltaText: ct.outcomeDeltaText,
+            question: {
+              type: ct.question.type,
+              category: ct.question.category,
+              points: ct.question.points,
+              question: ct.question.question,
+              options: ct.question.options,
+              min: ct.question.min,
+              max: ct.question.max,
+              step: ct.question.step,
+              unit: ct.question.unit,
+              socialTargetId: ct.question.socialTargetId,
+              socialTargetName: ct.question.socialTargetName,
+              explanation: ct.step === 'answered' ? ct.question.explanation : ''
+            }
+          }
+        : null
+    };
+
+    this.p2p.broadcastState(payload);
+  }
+
+  handleRemoteStateFromHost(st) {
+    const prevActive = this.remoteState?.activePlayerId;
+    const prevStep = this.remoteState?.currentTurn?.step;
+    this.remoteState = st;
+
+    // Вибрация на телефоне, когда наступил твой ход!
+    const me = this.getClientPlayerObj();
+    if (me && st.activePlayerId === me.id && (prevActive !== me.id || prevStep !== st.currentTurn?.step)) {
+      if (navigator.vibrate) {
+        try {
+          navigator.vibrate(120);
+        } catch (e) {}
+      }
+    }
+
+    this.render();
+  }
+
+  getClientPlayerObj() {
+    if (!this.remoteState?.players) return null;
+    return (
+      this.remoteState.players.find((p) => p.token === this.clientToken) ||
+      this.remoteState.players.find((p) => p.name.toLowerCase() === this.clientNameInput.trim().toLowerCase())
+    );
+  }
+
+  // --- ИГРОВАЯ ЛОГИКА ХОСТА ---
   getActivePlayer() {
     return this.state.players[this.state.activePlayerIdx] || this.state.players[0];
   }
 
   startGame() {
+    if (this.state.players.length < 2) {
+      alert('Добавьте хотя бы 2 игроков (с телефонов по QR-коду или кнопкой «+ Игрок на экране»)!');
+      return;
+    }
     sfx.play('fanfare');
     this.state.screen = 'play';
     this.state.turn = 1;
@@ -79,7 +454,7 @@ class PartyQuizGame {
       if (window.confetti) {
         window.confetti({ particleCount: 110, spread: 80, origin: { y: 0.5 } });
       }
-      this.saveState();
+      this.saveHostState();
       this.render();
       return;
     }
@@ -94,7 +469,6 @@ class PartyQuizGame {
     const activePlayer = this.getActivePlayer();
     const others = this.state.players.filter((p) => p.id !== activePlayer.id);
 
-    // Если вопрос типа 'choice' (4 варианта) — перемешиваем варианты, чтобы правильный ответ не был всегда первым!
     if ((!q.type || q.type === 'choice') && Array.isArray(q.options) && q.options.length === 4) {
       const correctText = q.options[q.answer];
       const indices = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
@@ -103,7 +477,6 @@ class PartyQuizGame {
       q.type = 'choice';
     }
 
-    // Если вопрос типа 'social' (про конкретного коллегу за столом) — выбираем случайного коллегу!
     if (q.type === 'social') {
       const targetColleague = others[Math.floor(Math.random() * others.length)] || activePlayer;
       q.socialTargetId = targetColleague.id;
@@ -126,7 +499,6 @@ class PartyQuizGame {
     this.state.usedIds.push(rawPicked.id);
     const q = this.prepareQuestionInstance(rawPicked);
 
-    // Каждый 4-й ход — Барабан Событий!
     const isWheelTurn = this.state.turn % 4 === 0;
     const evObj = isWheelTurn
       ? WHEEL_EVENTS[(Math.floor(this.state.turn / 4) - 1) % WHEEL_EVENTS.length]
@@ -142,34 +514,30 @@ class PartyQuizGame {
 
     this.state.currentTurn = {
       question: q,
-      eventObj: evObj, // null или объект из WHEEL_EVENTS
+      eventObj: evObj,
       wheelSpun: false,
-      // Шаги: 'wheel' -> 'event_action' -> 'question' -> 'social_verify' -> 'answered'
       step: isWheelTurn ? 'wheel' : 'question',
 
       multiplier: 1,
       usedDouble: false,
       usedHintOrFifty: false,
+      betsLocked: false,
+      sideBets: {}, // voterId -> 'pass' | 'fail'
       hiddenOptions: [],
       hintText: null,
       allyPlayerId: null,
       passedFromId: null,
-      selectingTargetFor: null, // 'ally' | 'pass'
+      selectingTargetFor: null,
 
-      // Для ползунка ('slider')
       sliderValue: midSlider,
-
-      // Для социального вопроса ('social')
       socialGuessedIdx: null,
       socialActualIdx: null,
 
-      // Для обычного ответа
       selectedOption: null,
       isWin: false,
       outcomeTitle: '',
       outcomeDeltaText: '',
 
-      // Данные ивентов
       boxes,
       pickedBoxIdx: null,
       boxResultMsg: null,
@@ -183,11 +551,10 @@ class PartyQuizGame {
       dilemmaResultMsg: null
     };
 
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
-  // --- БАРАБАН СОБЫТИЙ ---
   spinEventWheel() {
     if (this.wheelSpinning) return;
     this.wheelSpinning = true;
@@ -201,17 +568,14 @@ class PartyQuizGame {
     const interval = setInterval(() => {
       sfx.play('tick');
       const randomEv = WHEEL_EVENTS[ticks % WHEEL_EVENTS.length];
-      if (slotTextEl) {
-        slotTextEl.textContent = randomEv.title;
-      }
+      if (slotTextEl) slotTextEl.textContent = randomEv.title;
       ticks++;
       if (ticks >= totalTicks) {
         clearInterval(interval);
         this.wheelSpinning = false;
         sfx.play('event');
         ct.wheelSpun = true;
-        // Если событие 'steal' (Охота на лидера), оно не требует отдельного пред-шага — сразу к вопросу после показа!
-        this.saveState();
+        this.saveHostState();
         this.render();
       }
     }, 85);
@@ -224,17 +588,15 @@ class PartyQuizGame {
       ct.step = 'question';
     } else {
       ct.step = 'event_action';
-      // Если выпал социальный или ползунковый вопрос на Дуэль — заменим на чёткий вопрос с выбором для честной дуэли
       if (ct.eventObj?.id === 'duel' && ct.question.type !== 'choice' && ct.question.type !== 'truth') {
         const choicePool = QUIZ_QUESTIONS.filter((q) => q.type === 'choice');
         ct.question = this.prepareQuestionInstance(choicePool[Math.floor(Math.random() * choicePool.length)]);
       }
     }
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
-  // --- ИВЕНТЫ ПЕРЕД ВОПРОСОМ ---
   pickBox(idx) {
     const ct = this.state.currentTurn;
     const player = this.getActivePlayer();
@@ -247,6 +609,7 @@ class PartyQuizGame {
       ct.boxResultMsg = `${player.name} забирает надёжные +100 очков без риска.`;
     } else {
       const b = ct.boxes[idx];
+      if (!b) return;
       if (b.effect === 'plus300') {
         player.score += 300;
         sfx.play('correct');
@@ -261,7 +624,7 @@ class PartyQuizGame {
         ct.boxResultMsg = `Ловушка! ${player.name} теряет 100 очков.`;
       }
     }
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
@@ -277,7 +640,7 @@ class PartyQuizGame {
       }
     }
     ct.step = 'question';
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
@@ -286,7 +649,7 @@ class PartyQuizGame {
     sfx.play('event');
     ct.duelOpponentId = opponentId;
     ct.step = 'question';
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
@@ -294,7 +657,7 @@ class PartyQuizGame {
     const ct = this.state.currentTurn;
     sfx.play('click');
     ct.dilemmaPartnerId = partnerId;
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
@@ -307,7 +670,7 @@ class PartyQuizGame {
     sfx.play('click');
     if (!ct.dilemmaFirstChoice) {
       ct.dilemmaFirstChoice = choice;
-      this.saveState();
+      this.saveHostState();
       this.render();
       return;
     }
@@ -337,11 +700,10 @@ class PartyQuizGame {
       ct.dilemmaResultMsg = `Оба нажали «Украсть»! Банк сгорел, оба теряют по 150 очков.`;
     }
 
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
-  // --- ДЖОКЕРЫ ---
   async useJoker(type) {
     const ct = this.state.currentTurn;
     const player = this.getActivePlayer();
@@ -353,6 +715,7 @@ class PartyQuizGame {
       sfx.play('joker');
       player.jokers.fifty = false;
       ct.usedHintOrFifty = true;
+      ct.betsLocked = true;
       const wrongs = [0, 1, 2, 3].filter((i) => i !== q.answer).sort(() => Math.random() - 0.5);
       ct.hiddenOptions = wrongs.slice(0, 2);
     } else if (type === 'double') {
@@ -365,7 +728,9 @@ class PartyQuizGame {
       sfx.play('joker');
       player.jokers.hint = false;
       ct.usedHintOrFifty = true;
+      ct.betsLocked = true;
       ct.hintText = 'Подсказка загружается...';
+      this.saveHostState();
       this.render();
       ct.hintText = await aiClient.generateHint(q);
     } else if (type === 'ally' || type === 'pass') {
@@ -373,7 +738,7 @@ class PartyQuizGame {
       ct.selectingTargetFor = ct.selectingTargetFor === type ? null : type;
     }
 
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
@@ -385,6 +750,7 @@ class PartyQuizGame {
 
     const mode = ct.selectingTargetFor;
     ct.selectingTargetFor = null;
+    ct.betsLocked = true;
     sfx.play('joker');
 
     if (mode === 'ally') {
@@ -394,18 +760,30 @@ class PartyQuizGame {
     } else if (mode === 'pass') {
       player.jokers.pass = false;
       ct.passedFromId = player.id;
+      delete ct.sideBets[target.id];
       const newIdx = this.state.players.findIndex((p) => p.id === target.id);
       if (newIdx !== -1) {
         this.state.activePlayerIdx = newIdx;
       }
     }
 
-    this.saveState();
+    this.saveHostState();
     this.render();
   }
 
-  // --- ОТВЕТЫ НА ВСЕ 4 ТИПА ВОПРОСОВ ---
-  // Тип 3: Ползунок интуиции ('slider')
+  resolveSpectatorBets(isWin) {
+    const ct = this.state.currentTurn;
+    for (const [voterId, bet] of Object.entries(ct.sideBets || {})) {
+      const voter = this.state.players.find((p) => p.id === voterId);
+      if (!voter) continue;
+      if ((bet === 'pass' && isWin) || (bet === 'fail' && !isWin)) {
+        voter.score += 100;
+      } else {
+        voter.score -= 50;
+      }
+    }
+  }
+
   submitSliderGuess() {
     const ct = this.state.currentTurn;
     const q = ct.question;
@@ -418,13 +796,13 @@ class PartyQuizGame {
     let baseAward = 0;
     if (diff <= q.tolerancePerfect) {
       baseAward = 350;
-      ct.outcomeTitle = `Точно в яблочко! Правильный ответ: ${q.correctValue}${q.unit}`;
+      ct.outcomeTitle = `Точно в яблочко! Ответ: ${q.correctValue}${q.unit}`;
     } else if (diff <= q.toleranceGood) {
       baseAward = 200;
-      ct.outcomeTitle = `Очень близко! Правильный ответ: ${q.correctValue}${q.unit}`;
+      ct.outcomeTitle = `Очень близко! Ответ: ${q.correctValue}${q.unit}`;
     } else {
       baseAward = 0;
-      ct.outcomeTitle = `Мимо! Правильный ответ: ${q.correctValue}${q.unit} (ваш ответ: ${ct.sliderValue}${q.unit})`;
+      ct.outcomeTitle = `Мимо! Правильный ответ: ${q.correctValue}${q.unit} (выбрано: ${ct.sliderValue}${q.unit})`;
     }
 
     if (baseAward > 0) {
@@ -471,31 +849,29 @@ class PartyQuizGame {
       }
     }
 
-    this.saveState();
+    this.resolveSpectatorBets(ct.isWin);
+    this.saveHostState();
     this.render();
   }
 
-  // Тип 1, 2 и 4: Клик по варианту ответа
   answerQuestion(optionIdx) {
     const ct = this.state.currentTurn;
     const q = ct.question;
     const player = this.getActivePlayer();
 
-    // Если это социальный вопрос про коллегу ('social'):
-    // Сначала отвечает активный игрок (делает ставку на коллегу), а затем сам коллега подтверждает свой реальный выбор!
     if (q.type === 'social') {
       if (ct.step === 'question') {
         sfx.play('click');
         ct.socialGuessedIdx = optionIdx;
         ct.step = 'social_verify';
-        this.saveState();
+        this.saveHostState();
         this.render();
         return;
       }
       if (ct.step === 'social_verify') {
         ct.socialActualIdx = optionIdx;
         ct.selectedOption = ct.socialGuessedIdx;
-        q.answer = optionIdx; // Реальный ответ коллеги становится правильным ответом!
+        q.answer = optionIdx;
         ct.step = 'answered';
 
         const matched = ct.socialGuessedIdx === ct.socialActualIdx;
@@ -510,17 +886,18 @@ class PartyQuizGame {
             targetColleague.score += 100;
           }
           ct.isWin = true;
-          ct.outcomeTitle = `Полный синхрон! Вы прочитали мысли ${q.socialTargetName}!`;
+          ct.outcomeTitle = `Полный синхрон! Мысли ${q.socialTargetName} прочитаны!`;
           ct.outcomeDeltaText = `+${pts} для ${player.name} и +100 для ${q.socialTargetName}`;
           if (window.confetti) window.confetti({ particleCount: 55, spread: 65, origin: { y: 0.7 } });
         } else {
           sfx.play('wrong');
           player.streak = 0;
           ct.isWin = false;
-          ct.outcomeTitle = `Не угадал! ${q.socialTargetName} выбрал другой вариант`;
+          ct.outcomeTitle = `Не совпало! ${q.socialTargetName} выбрал другой вариант`;
           ct.outcomeDeltaText = '0 очков';
         }
-        this.saveState();
+        this.resolveSpectatorBets(ct.isWin);
+        this.saveHostState();
         this.render();
         return;
       }
@@ -528,12 +905,11 @@ class PartyQuizGame {
 
     if (ct.step !== 'question') return;
 
-    // Если активна Дуэль 1 на 1
     if (ct.eventObj?.id === 'duel' && ct.duelOpponentId) {
       if (ct.duelFirstAnswer === null) {
         sfx.play('click');
         ct.duelFirstAnswer = optionIdx;
-        this.saveState();
+        this.saveHostState();
         this.render();
         return;
       }
@@ -574,12 +950,12 @@ class PartyQuizGame {
         ct.outcomeDeltaText = 'Счёт не изменился';
       }
 
-      this.saveState();
+      this.resolveSpectatorBets(ct.isWin);
+      this.saveHostState();
       this.render();
       return;
     }
 
-    // Обычный вопрос ('choice' или 'truth')
     ct.selectedOption = optionIdx;
     ct.step = 'answered';
     const isCorrect = optionIdx === q.answer;
@@ -596,7 +972,6 @@ class PartyQuizGame {
         player.score += 100;
         extraNotes.push(`+100 за серию ×${player.streak}`);
       }
-
       if (ct.allyPlayerId) {
         const ally = this.state.players.find((p) => p.id === ct.allyPlayerId);
         if (ally) {
@@ -604,7 +979,6 @@ class PartyQuizGame {
           extraNotes.push(`+150 союзнику (${ally.name})`);
         }
       }
-
       if (ct.eventObj?.id === 'steal') {
         const sorted = [...this.state.players].sort((a, b) => b.score - a.score);
         const leader = sorted[0];
@@ -617,10 +991,7 @@ class PartyQuizGame {
 
       ct.outcomeTitle = 'Точно в цель!';
       ct.outcomeDeltaText = extraNotes.join(' · ');
-
-      if (window.confetti) {
-        window.confetti({ particleCount: 45, spread: 60, origin: { y: 0.7 } });
-      }
+      if (window.confetti) window.confetti({ particleCount: 45, spread: 60, origin: { y: 0.7 } });
     } else {
       sfx.play('wrong');
       player.streak = 0;
@@ -638,26 +1009,43 @@ class PartyQuizGame {
       }
     }
 
-    this.saveState();
+    this.resolveSpectatorBets(ct.isWin);
+    this.saveHostState();
     this.render();
   }
 
-  // --- РЕНДЕРИНГ ---
+  // --- РЕНДЕРИНГ ВСЕХ 3 РЕЖИМОВ ОКНА: LANDING | HOST STAGE | PLAYER CONTROLLER ---
   render() {
     const root = document.getElementById('app-root');
     if (!root) return;
 
+    if (this.role === 'landing') {
+      root.innerHTML = this.renderLandingRoleChoice();
+      this.bindLandingEvents();
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    if (this.role === 'player') {
+      root.innerHTML = this.renderPlayerController();
+      this.bindPlayerEvents();
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    // HOST VIEW (Экран для демонстрации в Discord)
     root.innerHTML = `
-      <div class="min-h-screen flex flex-col">
-        ${this.renderTopBar()}
-        <main class="flex-1 flex items-center justify-center px-4 py-6 sm:py-10">
-          <div class="w-full max-w-2xl">
+      <div class="min-h-screen flex flex-col relative">
+        <div id="host-reactions-layer"></div>
+        ${this.renderHostTopBar()}
+        <main class="flex-1 flex items-center justify-center px-4 py-6">
+          <div class="w-full ${this.state.screen === 'lobby' ? 'max-w-4xl' : 'max-w-2xl'}">
             ${
               this.state.screen === 'lobby'
-                ? this.renderLobby()
+                ? this.renderHostLobbyWithQR()
                 : this.state.screen === 'results'
-                ? this.renderResults()
-                : this.renderPlayStage()
+                ? this.renderHostResults()
+                : this.renderHostPlayStage()
             }
           </div>
         </main>
@@ -665,83 +1053,141 @@ class PartyQuizGame {
       </div>
     `;
 
-    this.bindEvents();
+    this.bindHostEvents();
+    this.drawQrCodeIfPresent();
     if (window.lucide) window.lucide.createIcons();
   }
 
-  renderTopBar() {
-    if (this.state.screen === 'lobby') {
-      return `
-        <header class="border-b border-[#2a3246] bg-[#0b0d13]/90 backdrop-blur">
-          <div class="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-lg bg-yellow-400 text-black font-title font-extrabold text-sm flex items-center justify-center">50</div>
-              <span class="font-title font-bold text-sm sm:text-base text-white">Вечерний Квиз</span>
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="btn-open-ai" class="px-3.5 py-2 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-xs font-semibold text-gray-200 flex items-center gap-1.5 transition">
-                <i data-lucide="sparkles" class="w-3.5 h-3.5 text-yellow-400"></i>
-                Сгенерировать тему с ИИ
-              </button>
-              <button id="btn-sound" class="p-2 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-gray-300">
-                <i data-lucide="${sfx.muted ? 'volume-x' : 'volume-2'}" class="w-4 h-4"></i>
-              </button>
-            </div>
-          </div>
-        </header>
-      `;
-    }
+  drawQrCodeIfPresent() {
+    const canvas = document.getElementById('lobby-qr-canvas');
+    if (!canvas || !window.QRious || !this.state.roomCode) return;
+    const joinUrl = `${window.location.origin}${window.location.pathname}?room=${this.state.roomCode}`;
+    new window.QRious({
+      element: canvas,
+      value: joinUrl,
+      size: 200,
+      background: '#ffffff',
+      foreground: '#090b10',
+      level: 'M'
+    });
+  }
 
-    const nextWheelIn = 4 - (this.state.turn % 4);
+  // ==========================================
+  // 1. LANDING: ВЫБОР «Я ХОСТ» ИЛИ «Я ИГРОК»
+  // ==========================================
+  renderLandingRoleChoice() {
+    return `
+      <div class="min-h-screen flex items-center justify-center p-4">
+        <div class="max-w-3xl w-full space-y-8 stage-enter">
+          <div class="text-center space-y-2">
+            <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-yellow-400/15 text-yellow-400 text-xs font-bold">
+              Вечерняя игра для Discord (Jackbox / Kahoot формат)
+            </div>
+            <h1 class="font-title text-3xl sm:text-4xl font-extrabold text-white">Выберите вашу роль</h1>
+            <p class="text-sm text-gray-400 max-w-lg mx-auto">
+              Один человек запускает <strong>Экран Хоста</strong> и шарит его в Discord, а остальные подключаются со своих телефонов или вкладок по QR-коду!
+            </p>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <!-- Карточка Хоста -->
+            <button id="btn-choose-host" class="game-stage-card p-7 text-left hover:border-yellow-400 transition group flex flex-col justify-between space-y-6">
+              <div class="space-y-3">
+                <div class="w-12 h-12 rounded-2xl bg-yellow-400 text-black flex items-center justify-center shadow-lg shadow-yellow-400/20 group-hover:scale-105 transition">
+                  <i data-lucide="monitor" class="w-6 h-6"></i>
+                </div>
+                <h2 class="font-title text-xl font-bold text-white">Создать игру (Я Хост)</h2>
+                <p class="text-xs text-gray-400 leading-relaxed">
+                  Откроет главный экран с <strong>QR-кодом</strong> и кодом комнаты для демонстрации экрана в Discord.
+                </p>
+              </div>
+              <div class="inline-flex items-center gap-2 text-xs font-bold text-yellow-400">
+                Открыть экран ведущего <i data-lucide="arrow-right" class="w-4 h-4"></i>
+              </div>
+            </button>
+
+            <!-- Карточка Игрока -->
+            <button id="btn-choose-player" class="game-stage-card p-7 text-left hover:border-emerald-400 transition group flex flex-col justify-between space-y-6">
+              <div class="space-y-3">
+                <div class="w-12 h-12 rounded-2xl bg-emerald-400 text-black flex items-center justify-center shadow-lg shadow-emerald-400/20 group-hover:scale-105 transition">
+                  <i data-lucide="smartphone" class="w-6 h-6"></i>
+                </div>
+                <h2 class="font-title text-xl font-bold text-white">Войти в комнату (Я Игрок)</h2>
+                <p class="text-xs text-gray-400 leading-relaxed">
+                  Введите 4 буквы кода комнаты с экрана Хоста, назовите себя и отвечайте со своего устройства!
+                </p>
+              </div>
+              <div class="inline-flex items-center gap-2 text-xs font-bold text-emerald-400">
+                Подключиться к игре <i data-lucide="arrow-right" class="w-4 h-4"></i>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ==========================================
+  // 2. HOST VIEW: ЛОББИ С QR-КОДОМ И ИГРОВАЯ СЦЕНА
+  // ==========================================
+  renderHostTopBar() {
+    const joinUrl = this.state.roomCode
+      ? `${window.location.origin}${window.location.pathname}?room=${this.state.roomCode}`
+      : '';
 
     return `
       <header class="border-b border-[#2a3246] bg-[#0b0d13]/95 backdrop-blur sticky top-0 z-20">
-        <div class="max-w-5xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div class="max-w-5xl mx-auto px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
           <div class="flex items-center gap-3">
-            <button id="btn-back-lobby" class="px-3 py-1.5 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-xs font-medium text-gray-400 hover:text-white transition">
-              ← Меню
+            <button id="btn-host-to-lobby" class="px-3 py-1.5 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+              <i data-lucide="users" class="w-3.5 h-3.5 text-yellow-400"></i>
+              Лобби (${this.state.players.length})
             </button>
-            <div>
-              <div class="font-num text-xs font-bold text-white">
-                ХОД ${this.state.turn} <span class="text-gray-500">/ ${this.state.totalQuestions}</span>
-              </div>
-              <div class="text-[11px] text-gray-400">
-                ${
-                  this.state.turn % 4 === 0
-                    ? '<span class="text-yellow-400 font-semibold">★ Барабан событий!</span>'
-                    : `До барабана событий: ${nextWheelIn} ${nextWheelIn === 1 ? 'ход' : 'хода'}`
-                }
-              </div>
-            </div>
+            ${
+              this.state.roomCode
+                ? `<button id="btn-copy-join-link" data-url="${joinUrl}" class="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-num text-xs font-bold flex items-center gap-1.5 hover:bg-emerald-500/25 transition" title="Скопировать ссылку для входа игроков">
+                    КОД: ${this.state.roomCode}
+                    <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                  </button>`
+                : ''
+            }
           </div>
 
-          <!-- Плашки игроков с очками и сериями -->
-          <div class="flex items-center gap-1.5 flex-wrap">
-            ${this.state.players
-              .map((p, idx) => {
-                const active = idx === this.state.activePlayerIdx;
-                return `
-                  <div class="px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 transition ${
-                    active
-                      ? 'bg-yellow-400 text-black font-extrabold shadow-lg shadow-yellow-400/15 scale-105'
-                      : 'bg-[#151923] text-gray-300 border border-[#2a3246]'
-                  }">
-                    <span>${this.escapeHtml(p.name)}</span>
-                    <span class="font-num ${active ? 'text-black' : 'text-yellow-400 font-bold'}">${p.score}</span>
-                    ${
-                      p.streak >= 2
-                        ? `<span class="px-1.5 py-0.2 rounded bg-orange-500 text-white font-num text-[10px] font-bold" title="Серия ответов подряд">×${p.streak}</span>`
-                        : ''
-                    }
-                  </div>
-                `;
-              })
-              .join('')}
-          </div>
+          ${
+            this.state.screen === 'play'
+              ? `<div class="flex items-center gap-1.5 flex-wrap">
+                  ${this.state.players
+                    .map((p, idx) => {
+                      const active = idx === this.state.activePlayerIdx;
+                      const bet = this.state.currentTurn?.sideBets?.[p.id];
+                      return `
+                        <div class="px-3 py-1 rounded-xl text-xs flex items-center gap-1.5 transition ${
+                          active
+                            ? 'bg-yellow-400 text-black font-extrabold shadow scale-105'
+                            : 'bg-[#151923] text-gray-200 border border-[#2a3246]'
+                        }">
+                          <span class="w-2 h-2 rounded-full" style="background:${p.colorHex || '#facc15'}"></span>
+                          <span>${this.escapeHtml(p.name)}</span>
+                          <span class="font-num ${active ? 'text-black' : 'text-yellow-400 font-bold'}">${p.score}</span>
+                          ${
+                            !active && bet
+                              ? `<span class="text-[10px] px-1 rounded ${
+                                  bet === 'pass' ? 'bg-emerald-500/30 text-emerald-300' : 'bg-red-500/30 text-red-300'
+                                }">${bet === 'pass' ? 'Верит' : 'Фол'}</span>`
+                              : ''
+                          }
+                        </div>
+                      `;
+                    })
+                    .join('')}
+                </div>`
+              : ''
+          }
 
           <div class="flex items-center gap-1.5">
-            <button id="btn-open-ai" class="p-2 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-gray-300" title="Сгенерировать вопросы с YandexGPT">
-              <i data-lucide="sparkles" class="w-4 h-4 text-yellow-400"></i>
+            <button id="btn-open-ai" class="px-3 py-1.5 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5 text-yellow-400"></i>
+              <span class="hidden sm:inline">ИИ-вопросы</span>
             </button>
             <button id="btn-sound" class="p-2 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-gray-300">
               <i data-lucide="${sfx.muted ? 'volume-x' : 'volume-2'}" class="w-4 h-4"></i>
@@ -752,136 +1198,171 @@ class PartyQuizGame {
     `;
   }
 
-  renderLobby() {
-    return `
-      <div class="game-stage-card p-6 sm:p-9 space-y-6 stage-enter">
-        <div class="space-y-2">
-          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-yellow-400/10 border border-yellow-400/30 text-yellow-400 text-xs font-semibold">
-            Локальная сессия в вашем браузере
-          </div>
-          <h1 class="font-title text-2xl sm:text-3xl font-extrabold text-white">50 Вопросов для Discord</h1>
-          <p class="text-sm text-gray-400 leading-relaxed">
-            Внутри 4 формата карточек: вопросы с подвохом, «Правда или Вымысел», «Ползунок интуиции» и вопросы про ваших коллег за столом + Барабан событий каждый 4-й ход.
-          </p>
-        </div>
+  renderHostLobbyWithQR() {
+    const joinUrl = this.state.roomCode
+      ? `${window.location.origin}${window.location.pathname}?room=${this.state.roomCode}`
+      : '';
 
-        <div class="space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-bold uppercase tracking-wider text-gray-400">
-              Игроки за столом (${this.state.players.length})
-            </span>
-            <button id="btn-add-player" class="text-xs font-bold text-yellow-400 hover:text-yellow-300">
-              + Добавить игрока
+    return `
+      <div class="grid grid-cols-1 md:grid-cols-12 gap-6 items-stretch stage-enter">
+        <!-- Левая карточка: QR-код и Код комнаты (5 колонок) -->
+        <div class="md:col-span-5 game-stage-card p-6 flex flex-col items-center justify-between text-center space-y-4">
+          <div class="space-y-1">
+            <div class="text-xs font-bold uppercase tracking-wider text-yellow-400">Вход с телефона или ПК</div>
+            <div class="text-xs text-gray-400">Наведите камеру на QR-код или перейдите по ссылке в чате Discord</div>
+          </div>
+
+          <!-- QR-код -->
+          <div class="p-3.5 bg-white rounded-2xl shadow-xl">
+            ${
+              this.state.roomCode
+                ? `<canvas id="lobby-qr-canvas" width="200" height="200" class="block"></canvas>`
+                : `<div class="w-[200px] h-[200px] flex items-center justify-center text-xs text-gray-500">Создаём комнату...</div>`
+            }
+          </div>
+
+          <div class="w-full space-y-2">
+            <div class="text-[11px] font-bold uppercase text-gray-400">Код комнаты:</div>
+            <div class="font-title text-3xl font-black tracking-widest text-yellow-400 bg-[#0b0d13] py-2.5 rounded-xl border border-[#2a3246]">
+              ${this.state.roomCode || '....'}
+            </div>
+            <button id="btn-copy-join-link-big" data-url="${joinUrl}" class="w-full py-2.5 px-4 rounded-xl bg-[#1c2230] hover:bg-[#252d3f] border border-[#2a3246] text-xs font-semibold text-gray-200 flex items-center justify-center gap-2 transition">
+              <i data-lucide="copy" class="w-3.5 h-3.5 text-yellow-400"></i>
+              Скопировать ссылку для Discord
             </button>
           </div>
+        </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            ${this.state.players
-              .map(
-                (p, idx) => `
-              <div class="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-[#0b0d13] border border-[#2a3246] focus-within:border-yellow-400">
-                <span class="font-num text-xs font-bold text-gray-500 w-5">${idx + 1}.</span>
-                <input
-                  type="text"
-                  data-player-name="${p.id}"
-                  value="${this.escapeHtml(p.name)}"
-                  placeholder="Имя игрока"
-                  class="flex-1 bg-transparent text-sm font-semibold text-white focus:outline-none"
-                />
-                ${
-                  this.state.players.length > 2
-                    ? `<button data-remove-player="${p.id}" class="text-gray-500 hover:text-red-400">
-                        <i data-lucide="x" class="w-4 h-4"></i>
-                      </button>`
-                    : ''
-                }
+        <!-- Правая карточка: Подключившиеся игроки и кнопка старта (7 колонок) -->
+        <div class="md:col-span-7 game-stage-card p-6 flex flex-col justify-between space-y-5">
+          <div class="space-y-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <h2 class="font-title text-xl font-bold text-white">
+                  Игроки в комнате (${this.state.players.length})
+                </h2>
+                <p class="text-xs text-gray-400 mt-0.5">
+                  Игроки появляются здесь автоматически при входе по QR/ссылке
+                </p>
               </div>
-            `
-              )
-              .join('')}
-          </div>
-        </div>
+              <button id="btn-add-local-player" class="px-3 py-1.5 rounded-xl bg-[#1c2230] hover:bg-[#252d3f] border border-[#2a3246] text-xs font-bold text-yellow-400">
+                + Игрок на экране
+              </button>
+            </div>
 
-        <div class="flex items-center justify-between pt-3 border-t border-[#2a3246]">
-          <span class="text-sm font-medium text-gray-400">Длина партии:</span>
-          <div class="flex gap-2">
-            ${[20, 35, 50]
-              .map(
-                (n) => `
-              <button
-                data-set-total="${n}"
-                class="px-4 py-1.5 rounded-xl font-num text-xs font-bold border transition ${
-                  this.state.totalQuestions === n
-                    ? 'bg-yellow-400 text-black border-yellow-400'
-                    : 'bg-[#0b0d13] text-gray-400 border-[#2a3246] hover:text-white'
-                }"
-              >${n} ходов</button>
-            `
-              )
-              .join('')}
+            ${
+              this.state.players.length === 0
+                ? `<div class="p-8 rounded-2xl bg-[#0b0d13] border border-dashed border-[#2a3246] text-center space-y-2">
+                    <div class="text-sm font-semibold text-gray-300">Ждём подключения игроков...</div>
+                    <div class="text-xs text-gray-500">Отсканируйте QR-код слева со смартфона или скиньте ссылку коллегам в Discord!</div>
+                  </div>`
+                : `<div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[270px] overflow-y-auto pr-1">
+                    ${this.state.players
+                      .map(
+                        (p) => `
+                      <div class="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-[#0b0d13] border border-[#2a3246]">
+                        <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                          <span class="w-3.5 h-3.5 rounded-full shrink-0" style="background:${p.colorHex || '#facc15'}"></span>
+                          <input
+                            type="text"
+                            data-host-edit-name="${p.id}"
+                            value="${this.escapeHtml(p.name)}"
+                            class="bg-transparent text-sm font-bold text-white focus:outline-none truncate w-full"
+                          />
+                        </div>
+                        <div class="flex items-center gap-1.5 shrink-0">
+                          <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                            p.peerId ? 'bg-emerald-500/15 text-emerald-400' : 'bg-gray-800 text-gray-400'
+                          }">
+                            ${p.peerId ? '📱 Пульт' : '🖥️ Экран'}
+                          </span>
+                          <button data-host-kick="${p.id}" class="text-gray-500 hover:text-red-400">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                          </button>
+                        </div>
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </div>`
+            }
           </div>
-        </div>
 
-        <div class="flex flex-col sm:flex-row gap-3 pt-2">
-          <button id="btn-start" class="tactile-gold-btn flex-1 py-4 px-6 text-base font-title">
-            Начать игру
-          </button>
-          ${
-            this.state.currentTurn && this.state.turn > 1
-              ? `<button id="btn-resume" class="tactile-option py-4 px-5 text-white font-semibold text-sm">
-                  Продолжить (Ход ${this.state.turn})
-                </button>`
-              : ''
-          }
+          <div class="space-y-4 pt-3 border-t border-[#2a3246]">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-gray-400">Вопросов в партии:</span>
+              <div class="flex gap-1.5">
+                ${[20, 35, 50]
+                  .map(
+                    (n) => `
+                  <button
+                    data-set-total="${n}"
+                    class="px-3.5 py-1.5 rounded-xl font-num text-xs font-bold border transition ${
+                      this.state.totalQuestions === n
+                        ? 'bg-yellow-400 text-black border-yellow-400'
+                        : 'bg-[#0b0d13] text-gray-400 border-[#2a3246] hover:text-white'
+                    }"
+                  >${n}</button>
+                `
+                  )
+                  .join('')}
+              </div>
+            </div>
+
+            <div class="flex gap-3">
+              <button id="btn-host-start" class="tactile-gold-btn flex-1 py-4 px-6 text-sm font-title">
+                Запустить игру (${this.state.players.length} игр.)
+              </button>
+              ${
+                this.state.currentTurn && this.state.turn > 1
+                  ? `<button id="btn-host-resume" class="tactile-option py-4 px-4 text-xs font-bold text-white">
+                      Продолжить (Ход ${this.state.turn})
+                    </button>`
+                  : ''
+              }
+            </div>
+          </div>
         </div>
       </div>
     `;
   }
 
-  renderPlayStage() {
+  renderHostPlayStage() {
     const ct = this.state.currentTurn;
     if (!ct) return '';
 
-    if (ct.step === 'wheel') {
-      return this.renderWheelStep(ct);
-    }
-    if (ct.step === 'event_action') {
-      return this.renderEventActionStep(ct);
-    }
-
+    if (ct.step === 'wheel') return this.renderWheelStep(ct);
+    if (ct.step === 'event_action') return this.renderEventActionStep(ct);
     return this.renderQuestionCard(ct);
   }
 
-  // Шаг 1 на каждом 4-м ходе: Барабан Событий!
   renderWheelStep(ct) {
     const player = this.getActivePlayer();
     const ev = ct.eventObj;
 
     return `
       <div class="game-stage-card p-6 sm:p-9 text-center space-y-6 stage-enter">
-        <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-yellow-400/15 text-yellow-400 text-xs font-bold uppercase tracking-wider">
+        <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-yellow-400/15 text-yellow-400 text-xs font-bold uppercase">
           ★ Событие ${this.state.turn}-го хода
         </div>
 
         <h2 class="font-title text-2xl sm:text-3xl font-extrabold text-white">
           Барабан событий для ${this.escapeHtml(player.name)}
         </h2>
+        <p class="text-xs text-gray-400">
+          ${this.escapeHtml(player.name)} может крутануть барабан прямо со своего телефона (или ведущий на экране)
+        </p>
 
-        <!-- Табло слот-машины -->
         <div class="p-7 rounded-2xl bg-[#0b0d13] border-2 ${
           ct.wheelSpun ? 'border-yellow-400 shadow-lg shadow-yellow-400/10' : 'border-[#2a3246]'
         } max-w-md mx-auto space-y-2">
           <div class="text-xs font-semibold text-gray-500 uppercase tracking-widest">
-            ${ct.wheelSpun ? 'ВЫПАЛ СЕКТОР:' : 'НАЖМИТЕ КНОПКУ НИЖЕ'}
+            ${ct.wheelSpun ? 'ВЫПАЛ СЕКТОР:' : 'БАРАБАН ГОТОВ'}
           </div>
           <div id="wheel-slot-title" class="font-title text-2xl sm:text-3xl font-black text-yellow-400 py-2">
             ${ct.wheelSpun ? ev.title : '???'}
           </div>
-          ${
-            ct.wheelSpun
-              ? `<p class="text-sm text-gray-300 leading-relaxed pt-1">${this.escapeHtml(ev.desc)}</p>`
-              : ''
-          }
+          ${ct.wheelSpun ? `<p class="text-sm text-gray-300 leading-relaxed pt-1">${this.escapeHtml(ev.desc)}</p>` : ''}
         </div>
 
         ${
@@ -897,7 +1378,6 @@ class PartyQuizGame {
     `;
   }
 
-  // Шаг 2: Интерактив выпавшего события
   renderEventActionStep(ct) {
     const player = this.getActivePlayer();
     const others = this.state.players.filter((p) => p.id !== player.id);
@@ -908,11 +1388,9 @@ class PartyQuizGame {
       return `
         <div class="game-stage-card p-6 sm:p-9 space-y-6 text-center stage-enter">
           <div class="inline-block px-3 py-1 rounded-full bg-yellow-400/15 text-yellow-400 text-xs font-bold">
-            Три шкатулки
+            Три шкатулки · Выбирает ${this.escapeHtml(player.name)}
           </div>
-          <h2 class="font-title text-2xl font-bold text-white">
-            ${this.escapeHtml(player.name)}, выбери одну шкатулку
-          </h2>
+          <h2 class="font-title text-2xl font-bold text-white">Выбери одну из трёх шкатулок</h2>
           <p class="text-sm text-gray-400 max-w-md mx-auto">
             Внутри спрятаны: <strong>+300 очков</strong>, <strong>удвоение вопроса ×2</strong> и <strong>ловушка -100 очков</strong>.
           </p>
@@ -954,7 +1432,7 @@ class PartyQuizGame {
                     .join('')}
                 </div>
                 <button data-pick-box="-1" class="text-xs text-gray-400 hover:text-white underline">
-                  Не рисковать и забрать гарантированные +100 очков
+                  Отказаться от риска и забрать +100 очков
                 </button>`
           }
         </div>
@@ -969,7 +1447,7 @@ class PartyQuizGame {
           </div>
           <h2 class="font-title text-2xl font-bold text-white">Тема: «${cat.name}»</h2>
           <p class="text-sm text-gray-400 max-w-md mx-auto">
-            Кто из 6 игроков готов забрать этот вопрос вслепую за <strong>двойные очки (+${ct.question.points * 2})</strong> со штрафом при ошибке?
+            Любой игрок может нажать кнопку на своём телефоне и перехватить этот вопрос за <strong>двойные очки (+${ct.question.points * 2})</strong>!
           </p>
 
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
@@ -1001,7 +1479,7 @@ class PartyQuizGame {
             ${this.escapeHtml(player.name)}, выбери соперника для дуэли
           </h2>
           <p class="text-sm text-gray-400 max-w-md mx-auto">
-            Оба ответите на один вопрос. Победитель забирает <strong>+300 очков</strong> и списывает 100 очков у проигравшего!
+            Оба ответите со своих пультов. Победитель получает <strong>+300 очков</strong> и забирает 100 очков у проигравшего!
           </p>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -1033,7 +1511,7 @@ class PartyQuizGame {
               ? `
                 <h2 class="font-title text-2xl font-bold text-white">${this.escapeHtml(player.name)}, выбери напарника</h2>
                 <p class="text-sm text-gray-400 max-w-md mx-auto">
-                  Оба выбирают: «Поделить» (+200 обоим) или «Украсть» (+350 себе, -100 напарнику). Если оба нажали «Украсть» — оба теряют по 150!
+                  Оба тайно жмут на пультах: «Поделить» (+200 обоим) или «Украсть» (+350 себе, -100 напарнику). Если оба нажали «Украсть» — оба теряют по 150!
                 </p>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   ${others
@@ -1060,17 +1538,10 @@ class PartyQuizGame {
               `
               : `
                 <h2 class="font-title text-xl font-bold text-white">
-                  Сейчас выбирает: <span class="text-yellow-400">${this.escapeHtml(
+                  Выбирает на пульте: <span class="text-yellow-400">${this.escapeHtml(
                     !ct.dilemmaFirstChoice ? player.name : partner.name
                   )}</span>
                 </h2>
-                <p class="text-xs text-gray-400">
-                  ${
-                    !ct.dilemmaFirstChoice
-                      ? 'Ваш выбор скроется сразу после клика.'
-                      : `Выбор игрока ${this.escapeHtml(player.name)} засекречен! Слово за ${this.escapeHtml(partner.name)}.`
-                  }
-                </p>
                 <div class="grid grid-cols-2 gap-3 pt-2">
                   <button data-dilemma-act="coop" class="tactile-option p-5 text-center">
                     <div class="font-bold text-base text-emerald-400">Поделить</div>
@@ -1090,7 +1561,6 @@ class PartyQuizGame {
     return '';
   }
 
-  // Главная карточка вопроса (поддерживает 4 разных формата: choice, truth, slider, social)
   renderQuestionCard(ct) {
     const q = ct.question;
     const player = this.getActivePlayer();
@@ -1103,16 +1573,15 @@ class PartyQuizGame {
     const pts = Math.round(q.points * ct.multiplier);
 
     const typeBadges = {
-      choice: { label: cat.name, color: 'text-indigo-300 bg-indigo-500/15 border-indigo-500/30' },
-      truth: { label: 'Правда или Вымысел', color: 'text-amber-300 bg-amber-500/15 border-amber-500/30' },
-      slider: { label: 'Ползунок интуиции', color: 'text-cyan-300 bg-cyan-500/15 border-cyan-500/30' },
+      choice: { label: `${cat.name} · Вопрос ${this.state.turn}/${this.state.totalQuestions}`, color: 'text-indigo-300 bg-indigo-500/15 border-indigo-500/30' },
+      truth: { label: `Правда или Вымысел · Ход ${this.state.turn}/${this.state.totalQuestions}`, color: 'text-amber-300 bg-amber-500/15 border-amber-500/30' },
+      slider: { label: `Ползунок интуиции · Ход ${this.state.turn}/${this.state.totalQuestions}`, color: 'text-cyan-300 bg-cyan-500/15 border-cyan-500/30' },
       social: { label: `Чтение мыслей · ${q.socialTargetName || 'Коллега'}`, color: 'text-pink-300 bg-pink-500/15 border-pink-500/30' }
     };
     const badge = typeBadges[q.type || 'choice'] || typeBadges.choice;
 
     return `
       <div class="game-stage-card p-6 sm:p-9 space-y-6 stage-enter">
-        <!-- Шапка карточки -->
         <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-[#2a3246]">
           <div class="space-y-1">
             <span class="inline-block px-2.5 py-0.5 rounded-md border text-[11px] font-bold ${badge.color}">
@@ -1121,7 +1590,7 @@ class PartyQuizGame {
             <div class="text-base font-bold text-white pt-0.5">
               ${
                 isSocialVerify
-                  ? `Слово за <span class="text-pink-400">${this.escapeHtml(q.socialTargetName)}</span>: какой вариант про тебя правда?`
+                  ? `Ждём подтверждения на пульте от <span class="text-pink-400">${this.escapeHtml(q.socialTargetName)}</span>`
                   : isDuel
                   ? ct.duelFirstAnswer === null
                     ? `Дуэль (1/2) · Отвечает: <span class="text-yellow-400">${this.escapeHtml(player.name)}</span>`
@@ -1131,19 +1600,11 @@ class PartyQuizGame {
             </div>
           </div>
 
-          <div class="flex items-center gap-2">
-            ${
-              ct.eventObj?.id === 'steal'
-                ? `<span class="px-2.5 py-1 rounded-lg bg-orange-500/15 border border-orange-500/30 text-orange-300 text-xs font-bold">Охота на лидера</span>`
-                : ''
-            }
-            <span class="px-3.5 py-1.5 rounded-xl bg-yellow-400/15 border border-yellow-400/30 text-yellow-400 font-num font-bold text-sm">
-              +${isDuel ? 300 : q.type === 'slider' ? 350 * ct.multiplier : pts}
-            </span>
-          </div>
+          <span class="px-3.5 py-1.5 rounded-xl bg-yellow-400/15 border border-yellow-400/30 text-yellow-400 font-num font-bold text-sm">
+            +${isDuel ? 300 : q.type === 'slider' ? 350 * ct.multiplier : pts}
+          </span>
         </div>
 
-        <!-- Сам вопрос -->
         <h2 class="text-xl sm:text-2xl font-bold text-white leading-snug">
           ${this.escapeHtml(q.question)}
         </h2>
@@ -1161,37 +1622,21 @@ class PartyQuizGame {
             ? `<div class="p-3.5 rounded-xl bg-[#0b0d13] border border-emerald-500/40 text-xs text-emerald-300">
                 Помощь друга: <strong>${this.escapeHtml(
                   this.state.players.find((p) => p.id === ct.allyPlayerId)?.name || ''
-                )}</strong> помогает советом в Discord (+150 ему при успехе).
+                )}</strong> подсказывает в голосовом чате (+150 ему при успехе).
               </div>`
             : ''
         }
 
-        ${
-          isSocialVerify
-            ? `<div class="p-3.5 rounded-xl bg-pink-500/10 border border-pink-500/30 text-xs text-pink-200">
-                Ставка игрока <strong>${this.escapeHtml(player.name)}</strong> принята и засекречена! Теперь <strong>${this.escapeHtml(
-                q.socialTargetName
-              )}</strong> выбирает свой настоящий ответ:
-              </div>`
-            : ''
-        }
+        ${q.type === 'slider' ? this.renderSliderBody(ct, q, isAnswered) : this.renderOptionsBody(ct, q, isAnswered)}
 
-        <!-- КОНТЕНТ В ЗАВИСИМОСТИ ОТ ТИПА КАРТОЧКИ -->
-        ${
-          q.type === 'slider'
-            ? this.renderSliderBody(ct, q, isAnswered)
-            : this.renderOptionsBody(ct, q, isAnswered)
-        }
-
-        <!-- Выбор цели джокера (если нажали «Помощь друга» или «Передать вопрос») -->
         ${
           ct.selectingTargetFor && !isAnswered
             ? `<div class="p-4 rounded-xl bg-[#0b0d13] border border-yellow-400/50 space-y-2.5 stage-enter">
                 <div class="text-xs font-bold text-yellow-400">
                   ${
                     ct.selectingTargetFor === 'ally'
-                      ? 'Кого берём в союзники на этот вопрос (+150 очков ему при верном ответе)?'
-                      : 'Кому передаём этот вопрос?'
+                      ? 'Кого берём в союзники (+150 ему при верном ответе)?'
+                      : 'Кому принудительно передаём этот вопрос?'
                   }
                 </div>
                 <div class="flex flex-wrap gap-2">
@@ -1209,13 +1654,12 @@ class PartyQuizGame {
             : ''
         }
 
-        <!-- Нижняя панель: Джокеры ИЛИ Разбор ответа -->
         ${
           !isAnswered && !isSocialVerify && !isDuel
             ? `
               <div class="pt-4 border-t border-[#2a3246] space-y-2">
                 <div class="text-[11px] font-semibold text-gray-500">
-                  Джокеры игрока ${this.escapeHtml(player.name)}:
+                  Джокеры игрока ${this.escapeHtml(player.name)} (доступны и на телефоне):
                 </div>
                 <div class="flex flex-wrap gap-2">
                   ${[
@@ -1278,7 +1722,7 @@ class PartyQuizGame {
     return `
       <div class="p-6 rounded-2xl bg-[#0b0d13] border border-[#2a3246] space-y-5">
         <div class="flex items-baseline justify-between">
-          <span class="text-xs font-bold uppercase tracking-wider text-gray-400">Ваш ответ на шкале:</span>
+          <span class="text-xs font-bold uppercase tracking-wider text-gray-400">Ответ на шкале:</span>
           <div class="font-num text-3xl font-extrabold text-yellow-400">
             <span id="slider-live-val">${ct.sliderValue}</span><span class="text-lg text-gray-400">${q.unit}</span>
           </div>
@@ -1353,7 +1797,7 @@ class PartyQuizGame {
     `;
   }
 
-  renderResults() {
+  renderHostResults() {
     const sorted = [...this.state.players].sort((a, b) => b.score - a.score);
     return `
       <div class="game-stage-card p-6 sm:p-9 space-y-6 text-center stage-enter">
@@ -1369,6 +1813,7 @@ class PartyQuizGame {
             }">
               <div class="flex items-center gap-3">
                 <span class="font-num font-bold text-sm w-6 text-gray-400">#${i + 1}</span>
+                <span class="w-3 h-3 rounded-full" style="background:${p.colorHex || '#facc15'}"></span>
                 <span class="font-bold text-white">${this.escapeHtml(p.name)}</span>
               </div>
               <span class="font-num font-extrabold text-lg text-yellow-400">${p.score} очк.</span>
@@ -1385,6 +1830,490 @@ class PartyQuizGame {
     `;
   }
 
+  // ==========================================
+  // 3. PLAYER CONTROLLER VIEW: ЛИЧНЫЙ ПУЛЬТ ИГРОКА НА ТЕЛЕФОНЕ / ВКЛАДКЕ
+  // ==========================================
+  renderPlayerController() {
+    // Шаг А: Если ещё не подключился к комнате — экран ввода кода комнаты, имени и цвета
+    if (!this.clientConnected || !this.remoteState) {
+      return `
+        <div class="min-h-screen flex items-center justify-center p-4">
+          <div class="game-stage-card max-w-md w-full p-6 sm:p-8 space-y-6 stage-enter">
+            <div class="flex items-center justify-between">
+              <button id="btn-player-back-landing" class="text-xs text-gray-400 hover:text-white">← Назад</button>
+              <span class="text-xs font-bold uppercase text-emerald-400">Пульт игрока</span>
+            </div>
+
+            <div>
+              <h1 class="font-title text-2xl font-bold text-white">Вход в комнату</h1>
+              <p class="text-xs text-gray-400 mt-1">Введите 4-буквенный код с экрана ведущего в Discord и назовите себя</p>
+            </div>
+
+            ${
+              this.clientError
+                ? `<div class="p-3 rounded-xl bg-red-500/15 border border-red-500/40 text-xs font-semibold text-red-300">
+                    ${this.escapeHtml(this.clientError)}
+                  </div>`
+                : ''
+            }
+
+            <div class="space-y-4">
+              <div>
+                <label class="block text-xs font-bold uppercase text-gray-400 mb-1.5">Код комнаты (4 символа):</label>
+                <input
+                  id="player-room-code"
+                  type="text"
+                  maxlength="4"
+                  value="${this.escapeHtml(this.clientRoomInput)}"
+                  placeholder="ABCD"
+                  class="w-full rounded-xl bg-[#0b0d13] border-2 border-[#2a3246] focus:border-yellow-400 px-4 py-3 font-title text-2xl text-center uppercase tracking-widest text-yellow-400 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label class="block text-xs font-bold uppercase text-gray-400 mb-1.5">Ваше имя:</label>
+                <input
+                  id="player-nickname"
+                  type="text"
+                  maxlength="18"
+                  value="${this.escapeHtml(this.clientNameInput)}"
+                  placeholder="Например, Алекс"
+                  class="w-full rounded-xl bg-[#0b0d13] border border-[#2a3246] focus:border-yellow-400 px-4 py-3 text-base font-bold text-white focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label class="block text-xs font-bold uppercase text-gray-400 mb-1.5">Ваш цвет:</label>
+                <div class="grid grid-cols-6 gap-2">
+                  ${PLAYER_COLORS.map(
+                    (c) => `
+                    <button
+                      type="button"
+                      data-pick-color="${c.id}"
+                      class="h-10 rounded-xl border-2 transition ${
+                        this.clientColorInput === c.id ? 'border-white scale-110 shadow-lg' : 'border-transparent opacity-60'
+                      }"
+                      style="background:${c.hex}"
+                    ></button>
+                  `
+                  ).join('')}
+                </div>
+              </div>
+
+              <button
+                id="btn-player-connect"
+                ${this.clientConnecting ? 'disabled' : ''}
+                class="tactile-gold-btn w-full py-4 text-sm font-title"
+              >
+                ${this.clientConnecting ? 'Подключаемся...' : 'Войти в игру →'}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Шаг Б: Игрок подключён!
+    const rs = this.remoteState;
+    const me = this.getClientPlayerObj();
+    const isMyTurn = me && rs.activePlayerId === me.id;
+    const ct = rs.currentTurn;
+    const sorted = [...(rs.players || [])].sort((a, b) => b.score - a.score);
+    const myRank = me ? sorted.findIndex((p) => p.id === me.id) + 1 : '-';
+
+    return `
+      <div class="min-h-screen max-w-md mx-auto p-4 flex flex-col justify-between gap-4">
+        <!-- Верхняя плашка игрока на телефоне -->
+        <div class="game-stage-card p-4 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <span class="w-4 h-4 rounded-full" style="background:${me?.colorHex || '#facc15'}"></span>
+            <div>
+              <div class="font-bold text-sm text-white">${this.escapeHtml(me?.name || this.clientNameInput)}</div>
+              <div class="text-[11px] text-gray-400">Место: #${myRank} из ${rs.players?.length || 1}</div>
+            </div>
+          </div>
+          <div class="text-right">
+            <div class="font-num font-extrabold text-xl text-yellow-400">${me?.score ?? 0}</div>
+            <div class="text-[10px] text-gray-400 uppercase">очков</div>
+          </div>
+        </div>
+
+        <!-- Центральная панель пульта в зависимости от фазы игры -->
+        <div class="flex-1 flex flex-col justify-center">
+          ${this.renderPlayerActiveControl(rs, ct, me, isMyTurn)}
+        </div>
+
+        <!-- Нижняя панель живых реакций (вылетают на экран Хоста в Discord!) -->
+        <div class="game-stage-card p-3 flex items-center justify-between">
+          <span class="text-[11px] font-semibold text-gray-400 pl-1">Реакция на экран:</span>
+          <div class="flex gap-1.5">
+            ${['🔥', '😂', '👏', '🎯', '💀']
+              .map(
+                (em) => `
+              <button data-send-reaction="${em}" class="w-10 h-10 rounded-xl bg-[#0b0d13] hover:bg-[#1c2230] border border-[#2a3246] text-lg flex items-center justify-center active:scale-90 transition">
+                ${em}
+              </button>
+            `
+              )
+              .join('')}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  renderPlayerActiveControl(rs, ct, me, isMyTurn) {
+    if (rs.screen === 'lobby' || !ct) {
+      return `
+        <div class="game-stage-card p-7 text-center space-y-3 stage-enter">
+          <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
+            <i data-lucide="check-circle-2" class="w-7 h-7"></i>
+          </div>
+          <h2 class="font-title text-xl font-bold text-white">Вы в комнате ${this.escapeHtml(rs.roomCode)}!</h2>
+          <p class="text-xs text-gray-400 leading-relaxed">
+            Смотрите на демонстрацию экрана в Discord. Как только ведущий нажмёт «Запустить игру», здесь появится ваш пульт!
+          </p>
+        </div>
+      `;
+    }
+
+    if (rs.screen === 'results') {
+      return `
+        <div class="game-stage-card p-7 text-center space-y-3 stage-enter">
+          <div class="text-xs font-bold uppercase text-yellow-400">Партия завершена!</div>
+          <h2 class="font-title text-2xl font-bold text-white">Ваш итоговый счёт: ${me?.score ?? 0}</h2>
+        </div>
+      `;
+    }
+
+    // 1. Шаг барабана событий
+    if (ct.step === 'wheel') {
+      if (isMyTurn) {
+        return `
+          <div class="game-stage-card p-6 text-center space-y-5 stage-enter">
+            <div class="text-xs font-bold uppercase text-yellow-400">Твой ход · Событие!</div>
+            <h2 class="font-title text-xl font-bold text-white">
+              ${ct.wheelSpun ? ct.eventObj?.title : 'Испытай удачу на барабане!'}
+            </h2>
+            ${
+              ct.wheelSpun
+                ? `<p class="text-xs text-gray-300">${this.escapeHtml(ct.eventObj?.desc || '')}</p>
+                   <button id="btn-client-wheel" class="tactile-gold-btn w-full py-4 text-sm font-title">Продолжить →</button>`
+                : `<button id="btn-client-wheel" class="tactile-gold-btn w-full py-5 text-base font-title">Крутить барабан!</button>`
+            }
+          </div>
+        `;
+      }
+      return `
+        <div class="game-stage-card p-6 text-center space-y-2">
+          <div class="text-xs font-bold text-yellow-400">Барабан событий</div>
+          <p class="text-sm text-gray-300">Сейчас крутит барабан игрок <strong>${this.escapeHtml(rs.activePlayerName)}</strong></p>
+        </div>
+      `;
+    }
+
+    // 2. Шаг спец-ивента перед вопросом
+    if (ct.step === 'event_action') {
+      const evId = ct.eventObj?.id;
+      if (evId === 'boxes' && isMyTurn) {
+        return `
+          <div class="game-stage-card p-6 space-y-4 text-center stage-enter">
+            <div class="text-xs font-bold text-yellow-400 uppercase">Три шкатулки</div>
+            ${
+              ct.boxResultMsg
+                ? `<div class="p-3.5 rounded-xl bg-[#0b0d13] text-sm font-bold text-yellow-300">${this.escapeHtml(ct.boxResultMsg)}</div>
+                   <button id="btn-client-proceed-q" class="tactile-gold-btn w-full py-4 text-sm font-title">Перейти к вопросу →</button>`
+                : `<div class="grid grid-cols-1 gap-2.5">
+                    ${ct.boxes
+                      .map(
+                        (b, i) => `
+                      <button data-client-box="${i}" class="tactile-option p-4 font-bold text-sm text-white">Открыть: ${b.label}</button>
+                    `
+                      )
+                      .join('')}
+                    <button data-client-box="-1" class="py-2 text-xs text-gray-400 underline">Отказаться и взять +100 очков</button>
+                  </div>`
+            }
+          </div>
+        `;
+      }
+
+      if (evId === 'auction') {
+        return `
+          <div class="game-stage-card p-6 space-y-4 text-center stage-enter">
+            <div class="text-xs font-bold text-emerald-400 uppercase">Перекуп вопроса вслепую</div>
+            <p class="text-xs text-gray-300">Нажмите ниже, если готовы забрать этот вопрос себе за двойные очки!</p>
+            <button id="btn-client-auction-take" class="tactile-gold-btn w-full py-4 text-sm font-title">
+              Перекупить вопрос себе (×2)!
+            </button>
+          </div>
+        `;
+      }
+
+      if (evId === 'duel' && isMyTurn) {
+        const others = (rs.players || []).filter((p) => p.id !== me.id);
+        return `
+          <div class="game-stage-card p-6 space-y-3 stage-enter">
+            <div class="text-xs font-bold text-red-400 uppercase">Выбери соперника для дуэли:</div>
+            ${others
+              .map(
+                (op) => `
+              <button data-client-duel-target="${op.id}" class="tactile-option w-full p-3.5 text-left font-bold text-sm text-white flex justify-between">
+                <span>${this.escapeHtml(op.name)}</span>
+                <span class="text-yellow-400 font-num">${op.score}</span>
+              </button>
+            `
+              )
+              .join('')}
+          </div>
+        `;
+      }
+
+      if (evId === 'dilemma') {
+        if (!ct.dilemmaPartnerId && isMyTurn) {
+          const others = (rs.players || []).filter((p) => p.id !== me.id);
+          return `
+            <div class="game-stage-card p-6 space-y-3 stage-enter">
+              <div class="text-xs font-bold text-purple-400 uppercase">Выбери напарника для сделки:</div>
+              ${others
+                .map(
+                  (op) => `
+                <button data-client-dilemma-target="${op.id}" class="tactile-option w-full p-3.5 text-left font-bold text-sm text-white flex justify-between">
+                  <span>${this.escapeHtml(op.name)}</span>
+                  <span class="text-yellow-400 font-num">${op.score}</span>
+                </button>
+              `
+                )
+                .join('')}
+            </div>
+          `;
+        }
+        if (ct.dilemmaResultMsg && isMyTurn) {
+          return `
+            <div class="game-stage-card p-6 space-y-4 text-center">
+              <div class="text-sm font-bold text-yellow-300">${this.escapeHtml(ct.dilemmaResultMsg)}</div>
+              <button id="btn-client-proceed-q" class="tactile-gold-btn w-full py-4 text-sm font-title">К вопросу →</button>
+            </div>
+          `;
+        }
+        const canActDilemma =
+          (!ct.dilemmaFirstChoiceDone && isMyTurn) ||
+          (ct.dilemmaFirstChoiceDone && me && me.id === ct.dilemmaPartnerId);
+        if (canActDilemma) {
+          return `
+            <div class="game-stage-card p-6 space-y-4 text-center stage-enter">
+              <div class="text-xs font-bold text-purple-400 uppercase">Ваше тайное решение в сделке:</div>
+              <div class="grid grid-cols-2 gap-3">
+                <button data-client-dilemma-act="coop" class="tactile-option p-5 font-bold text-emerald-400">Поделить (+200)</button>
+                <button data-client-dilemma-act="betray" class="tactile-option p-5 font-bold text-red-400">Украсть (+350)</button>
+              </div>
+            </div>
+          `;
+        }
+      }
+
+      return `
+        <div class="game-stage-card p-6 text-center space-y-2">
+          <div class="text-xs font-bold text-yellow-400">${this.escapeHtml(ct.eventObj?.title || 'Событие')}</div>
+          <p class="text-sm text-gray-300">Решение принимает <strong>${this.escapeHtml(rs.activePlayerName)}</strong></p>
+        </div>
+      `;
+    }
+
+    // 3. Если это социальный вопрос на шаге подтверждения ('social_verify') и он про МЕНЯ!
+    const q = ct.question;
+    if (ct.step === 'social_verify') {
+      if (me && q.socialTargetId === me.id) {
+        return `
+          <div class="game-stage-card p-5 space-y-4 stage-enter">
+            <div class="px-3 py-1 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold inline-block">
+              Вопрос про тебя! Выбери правду:
+            </div>
+            <div class="text-sm font-bold text-white">${this.escapeHtml(q.question)}</div>
+            <div class="grid grid-cols-1 gap-2.5">
+              ${(q.options || [])
+                .map(
+                  (opt, idx) => `
+                <button data-client-ans="${idx}" class="tactile-option p-3.5 text-left text-xs font-semibold text-white">
+                  <strong class="text-pink-400 mr-1.5">${['A', 'B', 'C', 'D'][idx]}.</strong> ${this.escapeHtml(opt)}
+                </button>
+              `
+                )
+                .join('')}
+            </div>
+          </div>
+        `;
+      }
+      return `
+        <div class="game-stage-card p-6 text-center space-y-2">
+          <div class="text-xs font-bold text-pink-400">Чтение мыслей</div>
+          <p class="text-sm text-gray-300">Ждём, какой вариант выберет <strong>${this.escapeHtml(q.socialTargetName)}</strong> на своём пульте!</p>
+        </div>
+      `;
+    }
+
+    // 4. Шаг ответа на вопрос (для активного игрока или второго участника дуэли)
+    const isDuelMyTurn =
+      ct.eventObj?.id === 'duel' &&
+      ct.duelOpponentId &&
+      ((!ct.duelFirstAnswerDone && isMyTurn) || (ct.duelFirstAnswerDone && me && me.id === ct.duelOpponentId));
+
+    if (ct.step === 'question' && (isMyTurn || isDuelMyTurn)) {
+      const others = (rs.players || []).filter((p) => p.id !== me.id);
+      return `
+        <div class="game-stage-card p-5 space-y-4 stage-enter">
+          <div class="flex items-center justify-between">
+            <span class="px-2.5 py-0.5 rounded bg-yellow-400 text-black font-bold text-xs uppercase">Ваш выход!</span>
+            <span class="font-num text-xs font-bold text-yellow-400">+${Math.round(q.points * ct.multiplier)} очк.</span>
+          </div>
+
+          <div class="text-sm font-bold text-white leading-snug">${this.escapeHtml(q.question)}</div>
+
+          ${
+            ct.hintText
+              ? `<div class="p-3 rounded-xl bg-[#0b0d13] border border-yellow-400/40 text-xs text-yellow-200">${this.escapeHtml(ct.hintText)}</div>`
+              : ''
+          }
+
+          ${
+            q.type === 'slider'
+              ? `<div class="p-4 rounded-xl bg-[#0b0d13] border border-[#2a3246] space-y-4">
+                  <div class="text-center font-num text-2xl font-extrabold text-yellow-400">
+                    <span id="client-slider-lbl">${ct.sliderValue}</span>${q.unit}
+                  </div>
+                  <input id="client-slider-inp" type="range" min="${q.min}" max="${q.max}" step="${q.step}" value="${ct.sliderValue}" class="intuition-slider" />
+                  <button id="btn-client-slider-send" class="tactile-gold-btn w-full py-3.5 text-xs font-title">Отправить ответ</button>
+                </div>`
+              : `<div class="grid grid-cols-1 gap-2.5">
+                  ${(q.options || [])
+                    .map((opt, idx) => {
+                      const hidden = (ct.hiddenOptions || []).includes(idx);
+                      if (hidden) return '';
+                      return `
+                        <button data-client-ans="${idx}" class="tactile-option p-3.5 text-left flex items-center gap-3 text-white">
+                          <span class="w-7 h-7 rounded-lg bg-[#0b0d13] border border-[#2a3246] font-num font-bold text-xs text-yellow-400 flex items-center justify-center shrink-0">
+                            ${q.type === 'truth' ? (idx === 0 ? '✓' : '✕') : ['A', 'B', 'C', 'D'][idx]}
+                          </span>
+                          <span class="text-xs sm:text-sm font-semibold leading-snug">${this.escapeHtml(opt)}</span>
+                        </button>
+                      `;
+                    })
+                    .join('')}
+                </div>`
+          }
+
+          ${
+            ct.selectingTargetFor
+              ? `<div class="p-3 rounded-xl bg-[#0b0d13] border border-yellow-400 space-y-2">
+                  <div class="text-xs font-bold text-yellow-400">Выберите игрока:</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    ${others
+                      .map(
+                        (op) => `
+                      <button data-client-joker-target="${op.id}" class="px-3 py-1.5 rounded-lg bg-[#151923] border border-[#2a3246] text-xs font-bold text-white">
+                        ${this.escapeHtml(op.name)}
+                      </button>
+                    `
+                      )
+                      .join('')}
+                  </div>
+                </div>`
+              : ''
+          }
+
+          ${
+            !isDuelMyTurn || !ct.eventObj
+              ? `<div class="pt-3 border-t border-[#2a3246] flex flex-wrap gap-1.5">
+                  ${[
+                    ...(q.type === 'choice' ? [{ id: 'fifty', label: '50/50', ok: me.jokers?.fifty }] : []),
+                    { id: 'double', label: '×2', ok: me.jokers?.double && !ct.usedHintOrFifty },
+                    { id: 'ally', label: 'Друг', ok: me.jokers?.ally },
+                    { id: 'pass', label: 'Передать', ok: me.jokers?.pass },
+                    { id: 'hint', label: 'Подсказка', ok: me.jokers?.hint }
+                  ]
+                    .map(
+                      (jk) => `
+                    <button
+                      data-client-joker="${jk.id}"
+                      ${!jk.ok ? 'disabled' : ''}
+                      class="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border ${
+                        jk.ok
+                          ? 'bg-[#0b0d13] border-[#2a3246] text-yellow-400'
+                          : 'opacity-30 line-through border-transparent text-gray-500'
+                      }"
+                    >${jk.label}</button>
+                  `
+                    )
+                    .join('')}
+                </div>`
+              : ''
+          }
+        </div>
+      `;
+    }
+
+    // 5. Если сейчас отвечает ДРУГОЙ игрок — пульт зрителя со ставками!
+    if (ct.step === 'question' && !isMyTurn) {
+      const myBet = me ? ct.sideBets?.[me.id] : null;
+      return `
+        <div class="game-stage-card p-6 space-y-5 text-center stage-enter">
+          <div class="space-y-1">
+            <div class="text-xs font-bold uppercase text-gray-400">Сейчас отвечает</div>
+            <div class="font-title text-xl font-bold text-yellow-400">${this.escapeHtml(rs.activePlayerName)}</div>
+          </div>
+
+          <div class="p-4 rounded-2xl bg-[#0b0d13] border border-[#2a3246] space-y-3">
+            <div class="text-xs font-semibold text-gray-300">
+              Ставка зрителя на этот ход (+100 за угаданный исход, -50 за промах):
+            </div>
+            <div class="grid grid-cols-2 gap-2.5">
+              <button
+                data-client-bet="pass"
+                ${ct.betsLocked ? 'disabled' : ''}
+                class="p-3.5 rounded-xl font-bold text-xs border transition ${
+                  myBet === 'pass'
+                    ? 'bg-emerald-500 text-black border-emerald-300'
+                    : 'bg-[#151923] text-emerald-400 border-[#2a3246]'
+                }"
+              >👍 Справится</button>
+              <button
+                data-client-bet="fail"
+                ${ct.betsLocked ? 'disabled' : ''}
+                class="p-3.5 rounded-xl font-bold text-xs border transition ${
+                  myBet === 'fail'
+                    ? 'bg-red-500 text-white border-red-300'
+                    : 'bg-[#151923] text-red-400 border-[#2a3246]'
+                }"
+              >💀 Ошибётся</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // 6. Когда ответ уже открыт ('answered')
+    if (ct.step === 'answered') {
+      return `
+        <div class="game-stage-card p-6 space-y-4 text-center stage-enter">
+          <div class="font-title text-lg font-bold ${ct.isWin ? 'text-emerald-400' : 'text-red-400'}">
+            ${this.escapeHtml(ct.outcomeTitle)}
+          </div>
+          <div class="text-xs font-bold text-yellow-400">${this.escapeHtml(ct.outcomeDeltaText)}</div>
+          <p class="text-xs text-gray-300 leading-relaxed">${this.escapeHtml(q.explanation || '')}</p>
+          ${
+            isMyTurn
+              ? `<button id="btn-client-next" class="tactile-gold-btn w-full py-4 text-sm font-title">
+                  Следующий ход →
+                </button>`
+              : ''
+          }
+        </div>
+      `;
+    }
+
+    return '';
+  }
+
   renderAiModal() {
     const cfg = aiClient.config;
     return `
@@ -1398,7 +2327,7 @@ class PartyQuizGame {
           </div>
 
           <p class="text-xs text-gray-400 leading-relaxed">
-            Ключ хранится только в вашем браузере (никто по ссылке на GitHub его не видит). Для обхода CORS при вызове с GitHub Pages запустите локально <code>node yandex-bridge.mjs</code>.
+            Ключ хранится только в вашем браузере. Для обхода CORS с GitHub Pages запустите локально <code>node yandex-bridge.mjs</code>.
           </p>
 
           <div class="space-y-2.5">
@@ -1422,21 +2351,38 @@ class PartyQuizGame {
     `;
   }
 
-  bindEvents() {
+  // --- ПРИВЯЗКА СОБЫТИЙ ---
+  bindLandingEvents() {
+    document.getElementById('btn-choose-host')?.addEventListener('click', () => this.becomeHost());
+    document.getElementById('btn-choose-player')?.addEventListener('click', () => this.becomePlayer());
+  }
+
+  bindHostEvents() {
     document.getElementById('btn-sound')?.addEventListener('click', () => {
       sfx.toggleMute();
       this.render();
     });
 
-    document.getElementById('btn-back-lobby')?.addEventListener('click', () => {
+    document.getElementById('btn-host-to-lobby')?.addEventListener('click', () => {
       this.state.screen = 'lobby';
+      this.saveHostState();
       this.render();
     });
+
+    const copyHandler = (e) => {
+      const url = e.currentTarget.getAttribute('data-url');
+      if (url && navigator.clipboard) {
+        navigator.clipboard.writeText(url);
+        sfx.play('joker');
+        e.currentTarget.innerHTML = '✓ Ссылка скопирована!';
+      }
+    };
+    document.getElementById('btn-copy-join-link')?.addEventListener('click', copyHandler);
+    document.getElementById('btn-copy-join-link-big')?.addEventListener('click', copyHandler);
 
     document.getElementById('btn-open-ai')?.addEventListener('click', () => {
       document.getElementById('ai-modal')?.classList.remove('hidden');
     });
-
     document.getElementById('btn-close-ai')?.addEventListener('click', () => {
       document.getElementById('ai-modal')?.classList.add('hidden');
     });
@@ -1457,7 +2403,7 @@ class PartyQuizGame {
         if (statusEl) statusEl.textContent = 'Генерируем 5 вопросов через YandexGPT...';
         const qs = await aiClient.generateCustomQuestions(topic, 5);
         this.state.customQuestions = [...qs, ...this.state.customQuestions];
-        this.saveState();
+        this.saveHostState();
         sfx.play('correct');
         if (statusEl) statusEl.textContent = `Готово! Добавлено ${qs.length} вопросов в колоду.`;
       } catch (err) {
@@ -1465,98 +2411,75 @@ class PartyQuizGame {
       }
     });
 
-    // Лобби
-    document.querySelectorAll('[data-player-name]').forEach((inp) => {
+    // Лобби Хоста
+    document.getElementById('btn-add-local-player')?.addEventListener('click', () => this.addLocalPlayerOnHost());
+
+    document.querySelectorAll('[data-host-edit-name]').forEach((inp) => {
       inp.addEventListener('input', (e) => {
-        const pid = e.target.getAttribute('data-player-name');
-        const p = this.state.players.find((pl) => pl.id === pid);
-        if (p) {
-          p.name = e.target.value;
-          this.saveState();
+        const pid = e.target.getAttribute('data-host-edit-name');
+        const pl = this.state.players.find((p) => p.id === pid);
+        if (pl) {
+          pl.name = e.target.value;
+          this.saveHostState();
         }
       });
     });
 
-    document.querySelectorAll('[data-remove-player]').forEach((btn) => {
+    document.querySelectorAll('[data-host-kick]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
-        const pid = e.currentTarget.getAttribute('data-remove-player');
-        if (this.state.players.length > 2) {
-          this.state.players = this.state.players.filter((p) => p.id !== pid);
-          this.saveState();
-          this.render();
-        }
+        const pid = e.currentTarget.getAttribute('data-host-kick');
+        this.state.players = this.state.players.filter((p) => p.id !== pid);
+        this.saveHostState();
+        this.render();
       });
-    });
-
-    document.getElementById('btn-add-player')?.addEventListener('click', () => {
-      this.state.players.push({
-        id: `p_${Date.now()}`,
-        name: `Игрок ${this.state.players.length + 1}`,
-        score: 0,
-        streak: 0,
-        jokers: { fifty: true, double: true, ally: true, pass: true, hint: true }
-      });
-      this.saveState();
-      this.render();
     });
 
     document.querySelectorAll('[data-set-total]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         this.state.totalQuestions = Number(e.currentTarget.getAttribute('data-set-total'));
-        this.saveState();
+        this.saveHostState();
         this.render();
       });
     });
 
-    document.getElementById('btn-start')?.addEventListener('click', () => this.startGame());
-    document.getElementById('btn-resume')?.addEventListener('click', () => {
+    document.getElementById('btn-host-start')?.addEventListener('click', () => this.startGame());
+    document.getElementById('btn-host-resume')?.addEventListener('click', () => {
       this.state.screen = 'play';
+      this.saveHostState();
       this.render();
     });
 
-    // Барабан событий
+    // Игровая сцена Хоста
     document.getElementById('btn-spin-wheel')?.addEventListener('click', () => this.spinEventWheel());
     document.getElementById('btn-wheel-proceed')?.addEventListener('click', () => this.proceedFromWheel());
 
-    // Ивенты
     document.querySelectorAll('[data-pick-box]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.pickBox(Number(e.currentTarget.getAttribute('data-pick-box')));
-      });
+      btn.addEventListener('click', (e) => this.pickBox(Number(e.currentTarget.getAttribute('data-pick-box'))));
     });
 
     document.getElementById('btn-proceed-question')?.addEventListener('click', () => {
       sfx.play('click');
       this.state.currentTurn.step = 'question';
-      this.saveState();
+      this.saveHostState();
       this.render();
     });
 
     document.querySelectorAll('[data-auction-take]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.pickAuctionBuyer(e.currentTarget.getAttribute('data-auction-take'));
-      });
+      btn.addEventListener('click', (e) => this.pickAuctionBuyer(e.currentTarget.getAttribute('data-auction-take')));
     });
 
     document.querySelectorAll('[data-duel-target]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.pickDuelOpponent(e.currentTarget.getAttribute('data-duel-target'));
-      });
+      btn.addEventListener('click', (e) => this.pickDuelOpponent(e.currentTarget.getAttribute('data-duel-target')));
     });
 
     document.querySelectorAll('[data-dilemma-target]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.pickDilemmaPartner(e.currentTarget.getAttribute('data-dilemma-target'));
-      });
+      btn.addEventListener('click', (e) => this.pickDilemmaPartner(e.currentTarget.getAttribute('data-dilemma-target')));
     });
 
     document.querySelectorAll('[data-dilemma-act]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.submitDilemmaChoice(e.currentTarget.getAttribute('data-dilemma-act'));
-      });
+      btn.addEventListener('click', (e) => this.submitDilemmaChoice(e.currentTarget.getAttribute('data-dilemma-act')));
     });
 
-    // Ползунок интуиции
     const sliderEl = document.getElementById('intuition-slider-input');
     sliderEl?.addEventListener('input', (e) => {
       this.state.currentTurn.sliderValue = Number(e.target.value);
@@ -1565,29 +2488,170 @@ class PartyQuizGame {
     });
     document.getElementById('btn-submit-slider')?.addEventListener('click', () => this.submitSliderGuess());
 
-    // Варианты ответа и джокеры
     document.querySelectorAll('[data-answer-idx]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.answerQuestion(Number(e.currentTarget.getAttribute('data-answer-idx')));
-      });
+      btn.addEventListener('click', (e) => this.answerQuestion(Number(e.currentTarget.getAttribute('data-answer-idx'))));
     });
 
     document.querySelectorAll('[data-joker]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.useJoker(e.currentTarget.getAttribute('data-joker'));
-      });
+      btn.addEventListener('click', (e) => this.useJoker(e.currentTarget.getAttribute('data-joker')));
     });
 
     document.querySelectorAll('[data-joker-target]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        this.confirmJokerTarget(e.currentTarget.getAttribute('data-joker-target'));
-      });
+      btn.addEventListener('click', (e) => this.confirmJokerTarget(e.currentTarget.getAttribute('data-joker-target')));
     });
 
     document.getElementById('btn-next-turn')?.addEventListener('click', () => this.nextTurn());
     document.getElementById('btn-restart')?.addEventListener('click', () => {
       this.state.screen = 'lobby';
+      this.saveHostState();
       this.render();
+    });
+  }
+
+  bindPlayerEvents() {
+    document.getElementById('btn-player-back-landing')?.addEventListener('click', () => {
+      this.role = 'landing';
+      this.render();
+    });
+
+    document.querySelectorAll('[data-pick-color]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        this.clientColorInput = e.currentTarget.getAttribute('data-pick-color');
+        localStorage.setItem('ps_last_color', this.clientColorInput);
+        this.render();
+      });
+    });
+
+    document.getElementById('player-room-code')?.addEventListener('input', (e) => {
+      this.clientRoomInput = e.target.value.toUpperCase();
+    });
+
+    document.getElementById('player-nickname')?.addEventListener('input', (e) => {
+      this.clientNameInput = e.target.value;
+    });
+
+    document.getElementById('btn-player-connect')?.addEventListener('click', async () => {
+      const code = (document.getElementById('player-room-code')?.value || this.clientRoomInput).trim().toUpperCase();
+      const name = (document.getElementById('player-nickname')?.value || this.clientNameInput).trim();
+      if (code.length < 3) {
+        this.clientError = 'Введите 4-значный код комнаты с экрана ведущего';
+        this.render();
+        return;
+      }
+      if (!name) {
+        this.clientError = 'Введите ваше имя';
+        this.render();
+        return;
+      }
+
+      this.clientRoomInput = code;
+      this.clientNameInput = name;
+      localStorage.setItem('ps_last_name', name);
+      this.clientError = null;
+      this.clientConnecting = true;
+      this.render();
+
+      const ok = await this.p2p.joinRoom(code, {
+        token: this.clientToken,
+        name,
+        color: this.clientColorInput
+      });
+      this.clientConnecting = false;
+      this.clientConnected = ok;
+      this.render();
+    });
+
+    // Кнопки управления на пульте игрока
+    const send = (payload) => this.p2p.sendActionToHost({ ...payload, token: this.clientToken });
+
+    document.querySelectorAll('[data-send-reaction]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        sfx.play('click');
+        send({ kind: 'REACTION', emoji: e.currentTarget.getAttribute('data-send-reaction') });
+      });
+    });
+
+    document.getElementById('btn-client-wheel')?.addEventListener('click', () => {
+      sfx.play('click');
+      send({ kind: 'SPIN_WHEEL' });
+    });
+
+    document.querySelectorAll('[data-client-box]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        sfx.play('click');
+        send({ kind: 'PICK_BOX', boxIdx: Number(e.currentTarget.getAttribute('data-client-box')) });
+      });
+    });
+
+    document.getElementById('btn-client-proceed-q')?.addEventListener('click', () => {
+      sfx.play('click');
+      send({ kind: 'PROCEED_QUESTION' });
+    });
+
+    document.getElementById('btn-client-auction-take')?.addEventListener('click', () => {
+      sfx.play('joker');
+      send({ kind: 'AUCTION_TAKE' });
+    });
+
+    document.querySelectorAll('[data-client-duel-target]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        send({ kind: 'DUEL_TARGET', targetId: e.currentTarget.getAttribute('data-client-duel-target') });
+      });
+    });
+
+    document.querySelectorAll('[data-client-dilemma-target]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        send({ kind: 'DILEMMA_TARGET', targetId: e.currentTarget.getAttribute('data-client-dilemma-target') });
+      });
+    });
+
+    document.querySelectorAll('[data-client-dilemma-act]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        send({ kind: 'DILEMMA_ACT', choice: e.currentTarget.getAttribute('data-client-dilemma-act') });
+      });
+    });
+
+    document.querySelectorAll('[data-client-ans]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        sfx.play('click');
+        send({ kind: 'ANSWER_OPTION', optionIdx: Number(e.currentTarget.getAttribute('data-client-ans')) });
+      });
+    });
+
+    const cSlider = document.getElementById('client-slider-inp');
+    cSlider?.addEventListener('input', (e) => {
+      const lbl = document.getElementById('client-slider-lbl');
+      if (lbl) lbl.textContent = e.target.value;
+    });
+    document.getElementById('btn-client-slider-send')?.addEventListener('click', () => {
+      const val = Number(document.getElementById('client-slider-inp')?.value || 50);
+      sfx.play('click');
+      send({ kind: 'SLIDER_SUBMIT', value: val });
+    });
+
+    document.querySelectorAll('[data-client-joker]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        sfx.play('joker');
+        send({ kind: 'USE_JOKER', jokerType: e.currentTarget.getAttribute('data-client-joker') });
+      });
+    });
+
+    document.querySelectorAll('[data-client-joker-target]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        send({ kind: 'JOKER_TARGET', targetId: e.currentTarget.getAttribute('data-client-joker-target') });
+      });
+    });
+
+    document.querySelectorAll('[data-client-bet]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        sfx.play('click');
+        send({ kind: 'SIDE_BET', bet: e.currentTarget.getAttribute('data-client-bet') });
+      });
+    });
+
+    document.getElementById('btn-client-next')?.addEventListener('click', () => {
+      sfx.play('click');
+      send({ kind: 'NEXT_TURN' });
     });
   }
 
@@ -1601,5 +2665,5 @@ class PartyQuizGame {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  window.partyQuizGame = new PartyQuizGame();
+  window.partySyncPlatform = new PartySyncPlatform();
 });
