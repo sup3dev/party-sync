@@ -1,9 +1,8 @@
 // PARTY SYNC — Архитектура Stage (Экран Хоста с QR) + Controller (Личный пульт игрока)
 // Вдохновлено Jackbox, Kahoot, Doot Games и The Merkive
-import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=11';
-import { sfx } from './audio.js?v=11';
-import { aiClient } from './ai.js?v=11';
-import { P2PRoomManager } from './p2p.js?v=11';
+import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=12';
+import { sfx } from './audio.js?v=12';
+import { P2PRoomManager } from './p2p.js?v=12';
 
 const HOST_STORAGE_KEY = 'party_sync_host_v5';
 const CLIENT_TOKEN_KEY = 'party_sync_client_token_v5';
@@ -19,9 +18,9 @@ const PLAYER_COLORS = [
 
 class PartySyncPlatform {
   constructor() {
-    // Роль текущего окна: 'landing' (выбор роли) | 'host' (экран для Discord) | 'player' (пульт игрока)
     this.role = 'landing';
     this.wheelSpinning = false;
+    this.wakeLock = null;
 
     // Данные клиента-игрока
     this.clientToken = this.getOrCreateClientToken();
@@ -31,7 +30,9 @@ class PartySyncPlatform {
     this.clientConnected = false;
     this.clientConnecting = false;
     this.clientError = null;
-    this.remoteState = null; // Стейт, пришедший от Хоста
+    this.clientDraftSliderVal = null;
+    this.lastQuestionPrompt = null;
+    this.remoteState = null;
 
     // Состояние Хоста
     this.state = this.loadHostState() || this.createInitialHostState();
@@ -48,6 +49,17 @@ class PartySyncPlatform {
     this.render();
   }
 
+  async requestScreenWakeLock() {
+    try {
+      if ('wakeLock' in navigator && !this.wakeLock) {
+        this.wakeLock = await navigator.wakeLock.request('screen');
+        this.wakeLock.addEventListener('release', () => {
+          this.wakeLock = null;
+        });
+      }
+    } catch (e) {}
+  }
+
   getOrCreateClientToken() {
     let tok = localStorage.getItem(CLIENT_TOKEN_KEY);
     if (!tok) {
@@ -61,27 +73,38 @@ class PartySyncPlatform {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     if (roomParam && roomParam.trim().length >= 3) {
-      // Если открыли по QR-коду или ссылке с кодом комнаты — сразу включаем режим Игрока!
       this.role = 'player';
       this.clientRoomInput = roomParam.trim().toUpperCase();
+      // Если игрок в этой сессии уже входил в эту комнату и случайно обновил страницу на телефоне — переподключаем его автоматически!
+      const prevJoined = sessionStorage.getItem('ps_joined_room');
+      if (prevJoined === this.clientRoomInput && this.clientNameInput) {
+        setTimeout(() => this.connectPlayerToRoom(this.clientRoomInput, this.clientNameInput), 50);
+      }
       return;
     }
-    // Если ведущий обновил страницу (F5 / Ctrl+F5), автоматически возвращаем его в комнату Хоста!
+
     if (sessionStorage.getItem('ps_active_role') === 'host') {
       setTimeout(() => this.becomeHost(true), 0);
+      return;
+    }
+
+    const savedRoom = sessionStorage.getItem('ps_joined_room');
+    if (sessionStorage.getItem('ps_active_role') === 'player' && savedRoom && this.clientNameInput) {
+      this.role = 'player';
+      this.clientRoomInput = savedRoom;
+      setTimeout(() => this.connectPlayerToRoom(savedRoom, this.clientNameInput), 50);
     }
   }
 
   createInitialHostState() {
     return {
-      screen: 'lobby', // 'lobby' | 'play' | 'results'
+      screen: 'lobby',
       roomCode: null,
       totalQuestions: 50,
       turn: 1,
       activePlayerIdx: 0,
-      players: [], // Заполняются при входе по QR/коду + можно добавить с экрана Хоста
+      players: [],
       usedIds: [],
-      customQuestions: [],
       currentTurn: null
     };
   }
@@ -432,6 +455,13 @@ class PartySyncPlatform {
     const nextJson = JSON.stringify(st);
     const isSame = this.lastRemoteJson === nextJson;
     this.lastRemoteJson = nextJson;
+
+    const newQPrompt = st?.currentTurn?.question?.question || null;
+    if (newQPrompt !== this.lastQuestionPrompt) {
+      this.lastQuestionPrompt = newQPrompt;
+      this.clientDraftSliderVal = null;
+    }
+
     this.remoteState = st;
 
     const me = this.getClientPlayerObj();
@@ -518,7 +548,7 @@ class PartySyncPlatform {
   }
 
   setupTurn() {
-    const pool = [...this.state.customQuestions, ...QUIZ_QUESTIONS];
+    const pool = QUIZ_QUESTIONS;
     let available = pool.filter((q) => !this.state.usedIds.includes(q.id));
     if (available.length === 0) {
       this.state.usedIds = [];
@@ -780,10 +810,7 @@ class PartySyncPlatform {
       player.jokers.hint = false;
       ct.usedHintOrFifty = true;
       ct.betsLocked = true;
-      ct.hintText = 'Подсказка загружается...';
-      this.saveHostState();
-      this.render();
-      ct.hintText = await aiClient.generateHint(q);
+      ct.hintText = q.hint || 'Присмотрись к самому логичному варианту!';
     } else if (type === 'ally' || type === 'pass') {
       sfx.play('click');
       ct.selectingTargetFor = ct.selectingTargetFor === type ? null : type;
@@ -1134,7 +1161,7 @@ class PartySyncPlatform {
 
     // HOST VIEW (Экран для демонстрации в Discord)
     root.innerHTML = `
-      <div class="min-h-screen flex flex-col relative">
+      <div class="min-h-[100dvh] flex flex-col relative">
         <div id="host-reactions-layer"></div>
         ${this.renderHostTopBar()}
         <main class="flex-1 flex items-center justify-center px-4 py-6">
@@ -1148,7 +1175,6 @@ class PartySyncPlatform {
             }
           </div>
         </main>
-        ${this.renderAiModal()}
       </div>
     `;
 
@@ -1176,11 +1202,11 @@ class PartySyncPlatform {
   // ==========================================
   renderLandingRoleChoice() {
     return `
-      <div class="min-h-screen flex items-center justify-center p-4">
+      <div class="min-h-[100dvh] flex items-center justify-center p-4">
         <div class="max-w-3xl w-full space-y-8 stage-enter">
           <div class="text-center space-y-2">
             <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-yellow-400/15 text-yellow-400 text-xs font-bold">
-              Вечерняя игра для Discord (Jackbox / Kahoot формат)
+              Вечерняя игра для Discord (200 вопросов + события)
             </div>
             <h1 class="font-title text-3xl sm:text-4xl font-extrabold text-white">Выберите вашу роль</h1>
             <p class="text-sm text-gray-400 max-w-lg mx-auto">
@@ -1284,11 +1310,7 @@ class PartySyncPlatform {
           }
 
           <div class="flex items-center gap-1.5">
-            <button id="btn-open-ai" class="px-3 py-1.5 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-xs font-semibold text-gray-300 flex items-center gap-1.5">
-              <i data-lucide="sparkles" class="w-3.5 h-3.5 text-yellow-400"></i>
-              <span class="hidden sm:inline">ИИ-вопросы</span>
-            </button>
-            <button id="btn-sound" class="p-2 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-gray-300">
+            <button id="btn-sound" class="p-2 rounded-xl bg-[#151923] hover:bg-[#1c2230] border border-[#2a3246] text-gray-300" title="Звук">
               <i data-lucide="${sfx.muted ? 'volume-x' : 'volume-2'}" class="w-4 h-4"></i>
             </button>
           </div>
@@ -2299,9 +2321,9 @@ class PartySyncPlatform {
             q.type === 'slider'
               ? `<div class="p-4 rounded-xl bg-[#0b0d13] border border-[#2a3246] space-y-4">
                   <div class="text-center font-num text-2xl font-extrabold text-yellow-400">
-                    <span id="client-slider-lbl">${ct.sliderValue}</span>${q.unit}
+                    <span id="client-slider-lbl">${this.clientDraftSliderVal ?? ct.sliderValue}</span>${q.unit}
                   </div>
-                  <input id="client-slider-inp" type="range" min="${q.min}" max="${q.max}" step="${q.step}" value="${ct.sliderValue}" class="intuition-slider" />
+                  <input id="client-slider-inp" type="range" min="${q.min}" max="${q.max}" step="${q.step}" value="${this.clientDraftSliderVal ?? ct.sliderValue}" class="intuition-slider" />
                   <button id="btn-client-slider-send" class="tactile-gold-btn w-full py-3.5 text-xs font-title">Отправить ответ</button>
                 </div>`
               : `<div class="grid grid-cols-1 gap-2.5">
@@ -2434,41 +2456,28 @@ class PartySyncPlatform {
     return '';
   }
 
-  renderAiModal() {
-    const cfg = aiClient.config;
-    return `
-      <div id="ai-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-        <div class="game-stage-card max-w-lg w-full p-6 space-y-4 stage-enter">
-          <div class="flex items-center justify-between">
-            <h3 class="font-title font-bold text-base text-white">Свои вопросы с YandexGPT</h3>
-            <button id="btn-close-ai" class="text-gray-400 hover:text-white">
-              <i data-lucide="x" class="w-5 h-5"></i>
-            </button>
-          </div>
+  async connectPlayerToRoom(code, name) {
+    this.clientRoomInput = code;
+    this.clientNameInput = name;
+    localStorage.setItem('ps_last_name', name);
+    sessionStorage.setItem('ps_active_role', 'player');
+    this.clientError = null;
+    this.clientConnecting = true;
+    this.render();
 
-          <p class="text-xs text-gray-400 leading-relaxed">
-            Ключ хранится только в вашем браузере. Для обхода CORS с GitHub Pages запустите локально <code>node yandex-bridge.mjs</code>.
-          </p>
+    this.requestScreenWakeLock();
 
-          <div class="space-y-2.5">
-            <input id="yc-api-key" type="password" value="${this.escapeHtml(cfg.apiKey)}" placeholder="Yandex Cloud API-Key (AQVN...)" class="w-full rounded-xl bg-[#0b0d13] border border-[#2a3246] px-3.5 py-2.5 text-sm text-white focus:border-yellow-400 focus:outline-none" />
-            <input id="yc-folder-id" type="text" value="${this.escapeHtml(cfg.folderId)}" placeholder="Folder ID (b1g...)" class="w-full rounded-xl bg-[#0b0d13] border border-[#2a3246] px-3.5 py-2.5 text-sm text-white focus:border-yellow-400 focus:outline-none" />
-          </div>
-
-          <div class="pt-2 border-t border-[#2a3246] space-y-2">
-            <label class="text-xs font-semibold text-gray-300">Какую тему добавить в игру (+5 вопросов):</label>
-            <div class="flex gap-2">
-              <input id="ai-topic-input" type="text" placeholder="Например: мемы, кино, CS2, истории из жизни..." class="flex-1 rounded-xl bg-[#0b0d13] border border-[#2a3246] px-3.5 py-2 text-sm text-white focus:border-yellow-400 focus:outline-none" />
-              <button id="btn-gen-ai" class="tactile-gold-btn px-4 py-2 text-xs">
-                Создать
-              </button>
-            </div>
-          </div>
-
-          <div id="yc-status-msg" class="text-xs text-gray-300 min-h-[18px]"></div>
-        </div>
-      </div>
-    `;
+    const ok = await this.p2p.joinRoom(code, {
+      token: this.clientToken,
+      name,
+      color: this.clientColorInput
+    });
+    this.clientConnecting = false;
+    this.clientConnected = ok;
+    if (ok) {
+      sessionStorage.setItem('ps_joined_room', code);
+    }
+    this.render();
   }
 
   // --- ПРИВЯЗКА СОБЫТИЙ ---
@@ -2499,37 +2508,6 @@ class PartySyncPlatform {
     };
     document.getElementById('btn-copy-join-link')?.addEventListener('click', copyHandler);
     document.getElementById('btn-copy-join-link-big')?.addEventListener('click', copyHandler);
-
-    document.getElementById('btn-open-ai')?.addEventListener('click', () => {
-      document.getElementById('ai-modal')?.classList.remove('hidden');
-    });
-    document.getElementById('btn-close-ai')?.addEventListener('click', () => {
-      document.getElementById('ai-modal')?.classList.add('hidden');
-    });
-
-    document.getElementById('btn-gen-ai')?.addEventListener('click', async () => {
-      const apiKey = document.getElementById('yc-api-key')?.value || '';
-      const folderId = document.getElementById('yc-folder-id')?.value || '';
-      const topic = document.getElementById('ai-topic-input')?.value?.trim() || 'Кино, игры и забавные факты';
-      const statusEl = document.getElementById('yc-status-msg');
-
-      aiClient.saveConfig({ apiKey, folderId });
-      if (!aiClient.isConfigured()) {
-        if (statusEl) statusEl.textContent = 'Сначала укажите API-ключ Yandex Cloud.';
-        return;
-      }
-
-      try {
-        if (statusEl) statusEl.textContent = 'Генерируем 5 вопросов через YandexGPT...';
-        const qs = await aiClient.generateCustomQuestions(topic, 5);
-        this.state.customQuestions = [...qs, ...this.state.customQuestions];
-        this.saveHostState();
-        sfx.play('correct');
-        if (statusEl) statusEl.textContent = `Готово! Добавлено ${qs.length} вопросов в колоду.`;
-      } catch (err) {
-        if (statusEl) statusEl.textContent = `Ошибка: ${err.message}`;
-      }
-    });
 
     // Лобби Хоста
     document.getElementById('btn-add-local-player')?.addEventListener('click', () => this.addLocalPlayerOnHost());
@@ -2631,12 +2609,15 @@ class PartySyncPlatform {
   bindPlayerEvents() {
     document.getElementById('btn-player-back-landing')?.addEventListener('click', () => {
       this.p2p.cleanupConnections();
+      sessionStorage.removeItem('ps_joined_room');
+      sessionStorage.removeItem('ps_active_role');
       this.role = 'landing';
       this.render();
     });
 
     document.getElementById('btn-client-change-room')?.addEventListener('click', () => {
       this.p2p.cleanupConnections();
+      sessionStorage.removeItem('ps_joined_room');
       this.clientConnected = false;
       this.remoteState = null;
       this.render();
@@ -2671,22 +2652,7 @@ class PartySyncPlatform {
         this.render();
         return;
       }
-
-      this.clientRoomInput = code;
-      this.clientNameInput = name;
-      localStorage.setItem('ps_last_name', name);
-      this.clientError = null;
-      this.clientConnecting = true;
-      this.render();
-
-      const ok = await this.p2p.joinRoom(code, {
-        token: this.clientToken,
-        name,
-        color: this.clientColorInput
-      });
-      this.clientConnecting = false;
-      this.clientConnected = ok;
-      this.render();
+      await this.connectPlayerToRoom(code, name);
     });
 
     // Кнопки управления на пульте игрока
@@ -2748,11 +2714,12 @@ class PartySyncPlatform {
 
     const cSlider = document.getElementById('client-slider-inp');
     cSlider?.addEventListener('input', (e) => {
+      this.clientDraftSliderVal = Number(e.target.value);
       const lbl = document.getElementById('client-slider-lbl');
       if (lbl) lbl.textContent = e.target.value;
     });
     document.getElementById('btn-client-slider-send')?.addEventListener('click', () => {
-      const val = Number(document.getElementById('client-slider-inp')?.value || 50);
+      const val = Number(document.getElementById('client-slider-inp')?.value || this.clientDraftSliderVal || 50);
       sfx.play('click');
       send({ kind: 'SLIDER_SUBMIT', value: val });
     });

@@ -1,11 +1,11 @@
-// Стабильный Multi-Broker Realtime Engine (QoS 1 + Fast Retry + Versioned State + Keepalive)
+// Сверхнадёжный Multi-Broker Realtime Engine (QoS 1 + Fast Retry + Auto-Wake Reconnect на мобилках)
 const BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
   'wss://test.mosquitto.org:8081/mqtt'
 ];
 
-const TOPIC_PREFIX = 'psync_sup3dev_v8';
+const TOPIC_PREFIX = 'psync_sup3dev_v12';
 
 export class P2PRoomManager {
   constructor({ onPlayerJoin, onPlayerLeave, onPlayerAction, onHostStateUpdate, onStatusChange }) {
@@ -24,6 +24,50 @@ export class P2PRoomManager {
     this.onPlayerAction = onPlayerAction;
     this.onHostStateUpdate = onHostStateUpdate;
     this.onStatusChange = onStatusChange;
+
+    this.bindLifecycleWakeup();
+  }
+
+  // Авто-пробуждение при разблокировке экрана смартфона или возврате во вкладку браузера
+  bindLifecycleWakeup() {
+    if (typeof window === 'undefined') return;
+    const handleWake = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      if (!this.roomCode) return;
+
+      // Проверяем, есть ли живые коннекты; если мобильная ОС усыпила сокеты — будим их
+      const connectedCount = this.clients.filter((c) => c && c.connected).length;
+      if (connectedCount === 0) {
+        if (this.isHost) {
+          this.initHost(this.roomCode);
+        } else if (this.playerProfile) {
+          this.joinRoom(this.roomCode, this.playerProfile);
+        }
+        return;
+      }
+
+      // Если сокеты живы — сразу запрашиваем или рассылаем свежий стейт
+      if (this.isHost && this.lastStatePacket) {
+        this.publishAll(`${TOPIC_PREFIX}/${this.roomCode}/state`, this.lastStatePacket, true);
+      } else if (!this.isHost && this.playerProfile) {
+        const eventsTopic = `${TOPIC_PREFIX}/${this.roomCode}/events`;
+        this.publishAll(
+          eventsTopic,
+          {
+            type: 'JOIN',
+            pktId: this.makePacketId(),
+            senderId: this.senderId,
+            payload: this.playerProfile
+          },
+          false
+        );
+        this.publishAll(eventsTopic, { type: 'PING_STATE', senderId: this.senderId }, false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleWake);
+    window.addEventListener('online', handleWake);
+    window.addEventListener('focus', handleWake);
   }
 
   generateRoomCode() {
@@ -141,13 +185,13 @@ export class P2PRoomManager {
 
     BROKERS.forEach((url, idx) => {
       try {
-        const clientId = `ps8_h_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+        const clientId = `ps12_h_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
         const client = window.mqtt.connect(url, {
           clientId,
           clean: true,
-          keepalive: 25,
+          keepalive: 20,
           connectTimeout: 5000,
-          reconnectPeriod: 2000
+          reconnectPeriod: 1500
         });
 
         client.on('connect', () => {
@@ -173,7 +217,6 @@ export class P2PRoomManager {
       } catch (e) {}
     });
 
-    // Фоновая синхронизация каждые 3 секунды (если у кого-то на телефоне мигнула мобильная сеть, он догонит стейт без перезагрузки!)
     this.hostSyncTimer = setInterval(() => {
       if (this.lastStatePacket) {
         this.publishAll(stateTopic, this.lastStatePacket, true);
@@ -230,13 +273,13 @@ export class P2PRoomManager {
 
       BROKERS.forEach((url, idx) => {
         try {
-          const clientId = `ps8_p_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+          const clientId = `ps12_p_${this.roomCode}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
           const client = window.mqtt.connect(url, {
             clientId,
             clean: true,
-            keepalive: 25,
+            keepalive: 20,
             connectTimeout: 5000,
-            reconnectPeriod: 2000
+            reconnectPeriod: 1500
           });
 
           client.on('connect', () => {
@@ -282,7 +325,6 @@ export class P2PRoomManager {
 
   sendActionToHost(actionPayload) {
     if (this.isHost || !this.roomCode) return;
-    // Генерируем один и тот же pktId для основного пакета и его быстрого повтора через 220 мс (для 100% доставки на мобильной сети без дублей!)
     const pktId = this.makePacketId();
     const packet = {
       type: 'ACTION',
