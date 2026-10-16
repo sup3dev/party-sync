@@ -1,9 +1,9 @@
 // PARTY SYNC — Архитектура Stage (Экран Хоста с QR) + Controller (Личный пульт игрока)
 // Вдохновлено Jackbox, Kahoot, Doot Games и The Merkive
-import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js';
-import { sfx } from './audio.js';
-import { aiClient } from './ai.js';
-import { P2PRoomManager } from './p2p.js';
+import { CATEGORIES, WHEEL_EVENTS, QUIZ_QUESTIONS } from '../data/content.js?v=7';
+import { sfx } from './audio.js?v=7';
+import { aiClient } from './ai.js?v=7';
+import { P2PRoomManager } from './p2p.js?v=7';
 
 const HOST_STORAGE_KEY = 'party_sync_host_v5';
 const CLIENT_TOKEN_KEY = 'party_sync_client_token_v5';
@@ -64,6 +64,11 @@ class PartySyncPlatform {
       // Если открыли по QR-коду или ссылке с кодом комнаты — сразу включаем режим Игрока!
       this.role = 'player';
       this.clientRoomInput = roomParam.trim().toUpperCase();
+      return;
+    }
+    // Если ведущий обновил страницу (F5 / Ctrl+F5), автоматически возвращаем его в комнату Хоста!
+    if (sessionStorage.getItem('ps_active_role') === 'host') {
+      setTimeout(() => this.becomeHost(true), 0);
     }
   }
 
@@ -103,13 +108,15 @@ class PartySyncPlatform {
   }
 
   // --- ПЕРЕКЛЮЧЕНИЕ РОЛИ НА СТАРТОВОМ ЭКРАНЕ ---
-  async becomeHost() {
-    sfx.play('click');
+  async becomeHost(silent = false) {
+    if (!silent) sfx.play('click');
     this.role = 'host';
+    sessionStorage.setItem('ps_active_role', 'host');
     if (!this.state.roomCode) {
       this.state.roomCode = this.p2p.generateRoomCode();
     }
     this.hostNetStatus = 'connecting';
+    this.saveHostState();
     this.render();
 
     const code = await this.p2p.initHost(this.state.roomCode);
@@ -123,6 +130,7 @@ class PartySyncPlatform {
   becomePlayer() {
     sfx.play('click');
     this.role = 'player';
+    sessionStorage.setItem('ps_active_role', 'player');
     this.render();
   }
 
@@ -150,7 +158,6 @@ class PartySyncPlatform {
 
   handlePeerJoin(peerId, profile) {
     if (this.role !== 'host') return;
-    sfx.play('joker');
 
     const cleanName = (profile.name || 'Игрок').trim().slice(0, 18);
     // Ищем существующего игрока по токену или по имени (для автоматического восстановления при реконнекте!)
@@ -167,6 +174,7 @@ class PartySyncPlatform {
       if (profile.color) existing.color = profile.color;
       if (profile.token) existing.token = profile.token;
     } else {
+      sfx.play('joker');
       const colorObj =
         PLAYER_COLORS.find((c) => c.id === profile.color) ||
         PLAYER_COLORS[this.state.players.length % PLAYER_COLORS.length];
@@ -412,6 +420,10 @@ class PartySyncPlatform {
 
   handleRemoteStateFromHost(st) {
     this.remoteState = st;
+    const me = this.getClientPlayerObj();
+    if (me) {
+      this.p2p.stopJoinRetry();
+    }
     this.render();
   }
 
@@ -1963,15 +1975,36 @@ class PartySyncPlatform {
   }
 
   renderPlayerActiveControl(rs, ct, me, isMyTurn) {
-    if (rs.screen === 'lobby' || !ct) {
+    if (!me) {
       return `
-        <div class="game-stage-card p-7 text-center space-y-3 stage-enter">
+        <div class="game-stage-card p-7 text-center space-y-4 stage-enter">
+          <div class="w-12 h-12 rounded-2xl bg-yellow-400/20 text-yellow-400 flex items-center justify-center mx-auto animate-pulse">
+            <i data-lucide="radio" class="w-7 h-7"></i>
+          </div>
+          <h2 class="font-title text-xl font-bold text-white">Стучимся в комнату ${this.escapeHtml(this.clientRoomInput)}...</h2>
+          <p class="text-xs text-gray-400 leading-relaxed">
+            Отправляем сигнал на экран ведущего. Убедитесь, что у Хоста на компьютере открыто лобби с кодом <strong>${this.escapeHtml(this.clientRoomInput)}</strong>!
+          </p>
+          <button id="btn-client-change-room" class="px-4 py-2 rounded-xl bg-[#0b0d13] border border-[#2a3246] text-xs font-bold text-gray-300">
+            ← Изменить код комнаты
+          </button>
+        </div>
+      `;
+    }
+
+    if (rs.screen === 'lobby' || !ct) {
+      const playerNames = (rs.players || []).map((p) => p.name).join(', ');
+      return `
+        <div class="game-stage-card p-7 text-center space-y-4 stage-enter">
           <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
             <i data-lucide="check-circle-2" class="w-7 h-7"></i>
           </div>
           <h2 class="font-title text-xl font-bold text-white">Вы в комнате ${this.escapeHtml(rs.roomCode)}!</h2>
+          <div class="p-3 rounded-xl bg-[#0b0d13] border border-[#2a3246] text-xs text-gray-300">
+            Игроки в лобби (${rs.players?.length || 1}): <strong class="text-yellow-400">${this.escapeHtml(playerNames)}</strong>
+          </div>
           <p class="text-xs text-gray-400 leading-relaxed">
-            Смотрите на демонстрацию экрана в Discord. Как только ведущий нажмёт «Запустить игру», здесь появится ваш пульт!
+            Ждём, когда ведущий нажмёт «Запустить игру» на главном экране в Discord.
           </p>
         </div>
       `;
@@ -2510,7 +2543,15 @@ class PartySyncPlatform {
 
   bindPlayerEvents() {
     document.getElementById('btn-player-back-landing')?.addEventListener('click', () => {
+      this.p2p.cleanupConnections();
       this.role = 'landing';
+      this.render();
+    });
+
+    document.getElementById('btn-client-change-room')?.addEventListener('click', () => {
+      this.p2p.cleanupConnections();
+      this.clientConnected = false;
+      this.remoteState = null;
       this.render();
     });
 
