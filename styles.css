@@ -1,13 +1,13 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Unbounded:wght@600;700;800&family=JetBrains+Mono:wght@600;700&display=swap');
 
 :root {
-  --bg: #0f1115;
-  --card: #181b22;
-  --card-hover: #20242d;
-  --border: #2a2f3a;
-  --text: #f3f4f6;
-  --muted: #9ca3af;
-  --accent: #eab308;
+  --bg: #0b0d13;
+  --surface: #151923;
+  --surface-2: #1c2230;
+  --border: #2a3246;
+  --text: #f8fafc;
+  --muted: #94a3b8;
+  --gold: #facc15;
 }
 
 * {
@@ -17,45 +17,114 @@
 body {
   margin: 0;
   background-color: var(--bg);
+  background-image:
+    radial-gradient(circle at 50% 0%, rgba(250, 204, 21, 0.07) 0%, transparent 55%),
+    radial-gradient(#1e2433 1px, transparent 1px);
+  background-size: 100% 100%, 28px 28px;
   color: var(--text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   min-height: 100vh;
 }
 
-.card-surface {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
+.font-title {
+  font-family: 'Unbounded', sans-serif;
+  letter-spacing: -0.02em;
 }
 
-.option-btn {
-  background: var(--card);
+.font-num {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Главная игровая карточка с приятным объёмом */
+.game-stage-card {
+  background: var(--surface);
   border: 1.5px solid var(--border);
-  border-radius: 14px;
-  transition: all 0.15s ease;
+  border-radius: 22px;
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.65), 0 4px 0 0 #07080c;
 }
 
-.option-btn:hover:not(:disabled) {
-  background: var(--card-hover);
-  border-color: #4b5563;
+/* Тактильные игровые кнопки с нижней гранью (3D press feel) */
+.tactile-option {
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+  border-bottom-width: 4px;
+  border-bottom-color: #090b10;
+  border-radius: 16px;
+  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.tactile-option:hover:not(:disabled) {
+  background: #232b3d;
+  border-color: #475569;
+  border-bottom-color: #090b10;
+  transform: translateY(-2px);
+}
+
+.tactile-option:active:not(:disabled) {
+  transform: translateY(1px);
+  border-bottom-width: 2px;
+}
+
+.tactile-gold-btn {
+  background: #facc15;
+  color: #090b10;
+  border: 1.5px solid #fde047;
+  border-bottom: 4px solid #a16207;
+  border-radius: 14px;
+  font-weight: 800;
+  transition: all 0.12s ease;
+}
+
+.tactile-gold-btn:hover:not(:disabled) {
+  background: #fde047;
   transform: translateY(-1px);
 }
 
-.option-btn:active:not(:disabled) {
-  transform: translateY(0);
+.tactile-gold-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  border-bottom-width: 2px;
 }
 
-@keyframes fadeSlide {
+/* Кастомный ползунок для вопросов на интуицию */
+input[type="range"].intuition-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: #0f131c;
+  border: 1.5px solid var(--border);
+  border-radius: 999px;
+  outline: none;
+}
+
+input[type="range"].intuition-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #facc15;
+  border: 3px solid #0b0d13;
+  box-shadow: 0 4px 12px rgba(250, 204, 21, 0.45);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+
+input[type="range"].intuition-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+
+@keyframes stagePop {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px) scale(0.99);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
-.fade-in {
-  animation: fadeSlide 0.2s ease-out forwards;
+.stage-enter {
+  animation: stagePop 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
